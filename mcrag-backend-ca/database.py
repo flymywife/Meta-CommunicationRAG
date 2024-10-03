@@ -1,3 +1,5 @@
+# database.py
+
 import sqlite3
 import streamlit as st
 from datetime import datetime
@@ -6,40 +8,95 @@ class ConversationDatabase:
     def __init__(self, db_file='conversation_data.db'):
         self.db_file = db_file
         self.conn = sqlite3.connect(self.db_file)
+        self.conn.execute("PRAGMA foreign_keys = ON;")  # 外部キー制約を有効化
         self.cursor = self.conn.cursor()
-        self.create_table()
+        self.create_tables()
 
-    def create_table(self):
-        create_table_sql = '''
-        CREATE TABLE IF NOT EXISTS conversations (
-            talk_num INTEGER,
-            task_name TEXT,
+    def create_tables(self):
+        # tasks テーブル
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            character_prompt TEXT,
+            user_prompt TEXT
+        )
+        ''')
+        # words_info テーブル
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS words_info (
+            word_info_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER,
             word TEXT,
+            info TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id)
+        )
+        ''')
+        # conversations テーブル
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS conversations (
+            conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            word_info_id INTEGER NOT NULL,
+            talk_num TEXT NOT NULL,
             user TEXT,
             assistant TEXT,
-            token_count INTEGER,
-            processing_time REAL,
-            temperature REAL,
+            token_count TEXT,
+            processing_time TEXT,
+            temperature TEXT,
             created_at TEXT,
-            PRIMARY KEY (talk_num, task_name, word)
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id),
+            FOREIGN KEY (word_info_id) REFERENCES words_info (word_info_id),
+            UNIQUE (task_id, word_info_id, talk_num)
         )
-        '''
-        self.cursor.execute(create_table_sql)
+        ''')
         self.conn.commit()
 
     def get_current_timestamp(self):
         # ミリ秒まで含めたタイムスタンプを取得
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
+    def insert_task(self, task):
+        try:
+            insert_sql = '''
+            INSERT INTO tasks (task_name, character_prompt, user_prompt)
+            VALUES (?, ?, ?)
+            '''
+            data = (
+                task['task_name'],
+                task.get('character_prompt', ''),
+                task.get('user_prompt', '')
+            )
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+            return self.cursor.lastrowid  # 挿入したタスクのIDを返す
+        except Exception as e:
+            st.error(f"タスクの挿入中にエラーが発生しました: {e}")
+            return None
+
+    def insert_word_info(self, task_id, word, info):
+        try:
+            insert_sql = '''
+            INSERT INTO words_info (task_id, word, info)
+            VALUES (?, ?, ?)
+            '''
+            data = (task_id, word, info)
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+            return self.cursor.lastrowid  # 挿入したワード情報のIDを返す
+        except Exception as e:
+            st.error(f"ワード情報の挿入中にエラーが発生しました: {e}")
+            return None
+
     def insert_conversation(self, entry):
         insert_sql = '''
-        INSERT INTO conversations (talk_num, task_name, word, user, assistant, token_count, processing_time, temperature, created_at)
+        INSERT INTO conversations (task_id, word_info_id, talk_num, user, assistant, token_count, processing_time, temperature, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         data = (
+            entry['task_id'],
+            entry['word_info_id'],
             entry['talk_num'],
-            entry['task_name'],
-            entry['word'],
             entry['user'],
             entry['assistant'],
             entry['token_count'],
@@ -55,5 +112,3 @@ class ConversationDatabase:
 
     def close(self):
         self.conn.close()
-
-    # 必要に応じて他の CRUD メソッドを追加できます

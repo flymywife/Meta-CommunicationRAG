@@ -1,3 +1,5 @@
+# question_page.py
+
 import streamlit as st
 import os
 from dotenv import load_dotenv
@@ -19,69 +21,73 @@ def show_question_page():
     api_key = st.sidebar.text_input("OpenAI APIキーを入力してください:", value=default_api_key)
 
     # Temperatureのスライダー
-    temperature = st.sidebar.slider("Temperatureを選択してください:", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
+    temperature = st.sidebar.slider("Temperatureを選択してください:", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
 
-    # CSVファイルのアップロード
-    uploaded_files = st.file_uploader("会話履歴のCSVファイルをアップロードしてください（複数選択可）:", type="csv", accept_multiple_files=True)
+    # JSONファイルのアップロード
+    uploaded_file = st.file_uploader("会話データのJSONファイルをアップロードしてください:", type="json")
 
-    # 質問と回答の生成ボタン
-    if st.button("質問と回答を生成"):
-        if not api_key or api_key == "your_api_key":
-            st.error("有効なOpenAI APIキーを入力してください。")
-        elif not uploaded_files:
-            st.error("少なくとも1つのCSVファイルをアップロードしてください。")
-        else:
-            try:
-                with st.spinner("質問と回答を生成しています..."):
-                    # CSVファイルの内容を読み込む
-                    csv_contents = []
-                    for uploaded_file in uploaded_files:
-                        csv_content = uploaded_file.read().decode('utf-8')
-                        csv_contents.append(csv_content)
+    if uploaded_file is not None:
+        # JSONファイルの内容を読み込む
+        try:
+            json_data = json.load(uploaded_file)
+            st.success("JSONファイルが正常に読み込まれました。")
+            # ファイル名を取得
+            json_file_name = uploaded_file.name
+        except Exception as e:
+            st.error(f"JSONファイルの読み込み中にエラーが発生しました: {e}")
+            return
 
-                    # リクエストボディの作成
-                    payload = {
-                        "temperature": temperature,
-                        "api_key": api_key,
-                        "csv_contents": csv_contents
-                    }
+        # 質問と回答の生成ボタン
+        if st.button("質問と回答を生成"):
+            if not api_key or api_key == "your_api_key":
+                st.error("有効なOpenAI APIキーを入力してください。")
+            else:
+                try:
+                    with st.spinner("質問と回答を生成しています..."):
+                        # リクエストボディの作成
+                        payload = {
+                            "temperature": temperature,
+                            "api_key": api_key,
+                            "json_data": json_data
+                        }
 
-                    # バックエンドAPIのエンドポイント（ローカルホスト）
-                    url = "http://localhost:8000/generate_questions"
+                        # バックエンドAPIのエンドポイント（ローカルホスト）
+                        url = "http://localhost:8000/generate_questions"
 
-                    # APIリクエストの送信
-                    response = requests.post(url, json=payload)
+                        # APIリクエストの送信
+                        response = requests.post(url, json=payload)
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        results = data["results"]
-                        total_tokens = data["total_tokens"]
-                        total_processing_time = data["total_processing_time"]
+                        if response.status_code == 200:
+                            data = response.json()
+                            results = data["results"]
+                            total_tokens = data["total_tokens"]
+                            total_processing_time = data["total_processing_time"]
 
-                        # 結果の表示
-                        st.subheader("生成された質問と回答")
-                        for result in results:
-                            st.write(f"**Talk Nums**: {result['talk_nums']}")
-                            st.write(f"**Task Name**: {result['task_name']}")
-                            st.write(f"**Word**: {result['word']}")
-                            st.write(f"**Question**: {result['query']}")
-                            st.write(f"**Answer**: {result['answer']}")
-                            st.write(f"**Token Count**: {result['token_count']}")
-                            st.write(f"**Processing Time**: {result['processing_time']:.2f} seconds")
-                            st.write("---")
+                            # 結果の表示
+                            st.subheader("生成された質問と回答")
+                            for result in results:
+                                st.write(f"**Talk Nums**: {result['talk_nums']}")
+                                st.write(f"**Task Name**: {result['task_name']}")
+                                st.write(f"**Word**: {result['word']}")
+                                st.write(f"**Question**: {result['query']}")
+                                st.write(f"**Answer**: {result['answer']}")
+                                st.write("---")
 
-                        # DataFrameの作成
-                        df = pd.DataFrame(results, columns=["talk_nums", "task_name", "word", "query", "answer", "token_count", "processing_time"])
+                            # 合計のトークン数と処理時間を表示
+                            st.write(f"**Total Token Count**: {total_tokens}")
+                            st.write(f"**Total Processing Time**: {total_processing_time:.2f} seconds")
 
-                        # CSVのダウンロード
-                        csv = df.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="CSVをダウンロード",
-                            data=csv,
-                            file_name=f"questions_and_answers.csv",
-                            mime='text/csv',
-                        )
-                    else:
-                        st.error(f"エラーが発生しました: {response.text}")
-            except Exception as e:
-                st.error(f"エラーが発生しました: {e}")
+                            # 結果をJSONでダウンロード
+                            results_json = json.dumps(results, ensure_ascii=False, indent=2).encode('utf-8')
+                            st.download_button(
+                                label="結果をJSONでダウンロード",
+                                data=results_json,
+                                file_name=f"questions_{json_file_name}",
+                                mime='application/json',
+                            )
+                        else:
+                            st.error(f"エラーが発生しました: {response.text}")
+                except Exception as e:
+                    st.error(f"エラーが発生しました: {e}")
+    else:
+        st.info("会話データのJSONファイルをアップロードしてください。")

@@ -23,6 +23,8 @@ class QuestionGenerator:
             talk_nums_str = ','.join(talk_nums)
             task_name = chunk[0]['task_name'] if 'task_name' in chunk[0] else ''
             word = chunk[0]['word'] if 'word' in chunk[0] else ''
+            character_prompt = chunk[0]['character_prompt'] if 'character_prompt' in chunk[0] else ''
+            user_prompt = chunk[0]['user_prompt'] if 'user_prompt' in chunk[0] else ''
 
             # プライマリーキーの組み合わせを作成
             primary_key = (talk_nums_str, task_name, word)
@@ -34,33 +36,34 @@ class QuestionGenerator:
             else:
                 existing_keys.add(primary_key)
 
-            conversation_text = self.format_conversation(chunk)
+            # 会話履歴をメッセージ形式で取得
+            conversation_messages = self.get_conversation_messages(chunk)
 
             # 質問の生成
-            question_prompt = f"""
-あなたは以下の会話履歴に基づいて、その内容に関する質問を1つ作成してください。
-質問は、この会話履歴を全て参照しないと答えられないようにしてください。
+            # ユーザーのプロンプトをシステムメッセージとして設定
+            # 会話履歴を含める
+            # 最後に質問生成の指示を含める
 
-会話履歴:
-{conversation_text}
+            question_messages = [
+                {"role": "system", "content": user_prompt}
+            ] + conversation_messages + [
+                {"role": "user", "content": "上記の会話内容に基づいて、その内容に関する質問を1つ作成してください。質問は、この会話を全て参照しないと答えられないようにしてください。"}
+            ]
 
-質問:
-"""
-            question, token_count_q, processing_time_q = self.generate_text(question_prompt)
+            question, token_count_q, processing_time_q = self.generate_text(question_messages)
 
             # 回答の生成
-            answer_prompt = f"""
-以下の会話履歴と質問があります。質問に対する回答を作成してください。
+            # キャラクタープロンプトをシステムメッセージとして設定
+            # 会話履歴を含める
+            # 質問をユーザーからのメッセージとして含める
 
-会話履歴:
-{conversation_text}
+            answer_messages = [
+                {"role": "system", "content": character_prompt}
+            ] + conversation_messages + [
+                {"role": "user", "content": question}
+            ]
 
-質問:
-{question}
-
-回答:
-"""
-            answer, token_count_a, processing_time_a = self.generate_text(answer_prompt)
+            answer, token_count_a, processing_time_a = self.generate_text(answer_messages)
 
             # 結果の保存
             total_token_count = token_count_q + token_count_a
@@ -79,14 +82,12 @@ class QuestionGenerator:
             })
         return results
 
-    def generate_text(self, prompt):
+    def generate_text(self, messages):
         try:
             start_time = time.time()
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",  # 必要に応じてモデルを変更
-                messages=[
-                    {"role": "user", "content": prompt},
-                ],
+                model="gpt-4o-mini-2024-07-18",  # 必要に応じてモデルを変更
+                messages=messages,
                 max_tokens=500,
                 temperature=self.temperature,
             )
@@ -101,32 +102,38 @@ class QuestionGenerator:
             st.error(f"テキスト生成中にエラーが発生しました: {e}")
             return "", 0, 0
 
-    def format_conversation(self, chunk):
-        # 会話履歴をフォーマット
-        conversation_text = ''
+    def get_conversation_messages(self, chunk):
+        # 会話履歴をメッセージ形式に変換
+        messages = []
         for entry in chunk:
-            conversation_text += f"ユーザー: {entry['user']}\n"
-            conversation_text += f"アシスタント: {entry['assistant']}\n"
-        return conversation_text
+            messages.append({"role": "user", "content": entry['user']})
+            messages.append({"role": "assistant", "content": entry['assistant']})
+        return messages
 
-    def parse_csv_files(self, uploaded_files):
-        # CSVファイルから会話履歴を読み込み、チャンクに分ける
+    def parse_json_data(self, json_data):
+        # JSONデータから会話履歴を読み込み、チャンクに分ける
         all_chunks = []
-        for uploaded_file in uploaded_files:
-            try:
-                df = pd.read_csv(uploaded_file)
-                # 必要な列が存在するか確認
-                required_columns = ['talk_num', 'task_name', 'word', 'user', 'assistant']
-                if not all(col in df.columns for col in required_columns):
-                    st.error(f"{uploaded_file.name} に必要な列がありません。")
-                    continue
-                # talk_num ごとにソート
-                df = df.sort_values('talk_num')
-                # talk_num, task_name, word ごとにグループ化
-                grouped = df.groupby(['task_name', 'word'])
-                for _, group in grouped:
-                    chunk = group.to_dict('records')
-                    all_chunks.append(chunk)
-            except Exception as e:
-                st.error(f"{uploaded_file.name} の読み込み中にエラーが発生しました: {e}")
+        try:
+            conversations = json_data.get('conversations', [])
+            character_prompt = json_data.get('character_prompt', '')
+            user_prompt = json_data.get('user_prompt', '')
+            task_name = json_data.get('task_name', '')
+
+            # talk_num, task_name, word ごとにグループ化
+            from itertools import groupby
+            from operator import itemgetter
+
+            # conversations を task_name, word, talk_num でソート
+            conversations = sorted(conversations, key=lambda x: (x['task_name'], x['word'], int(x['talk_num'])))
+
+            # groupby でグループ化
+            for (task_name_key, word_key), group in groupby(conversations, key=lambda x: (x['task_name'], x['word'])):
+                chunk = list(group)
+                # 各エントリにキャラクタープロンプトとユーザープロンプトを追加
+                for entry in chunk:
+                    entry['character_prompt'] = character_prompt
+                    entry['user_prompt'] = user_prompt
+                all_chunks.append(chunk)
+        except Exception as e:
+            st.error(f"JSONデータの解析中にエラーが発生しました: {e}")
         return all_chunks

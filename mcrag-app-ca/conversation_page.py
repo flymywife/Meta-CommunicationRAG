@@ -28,7 +28,7 @@ def show_conversation_page():
 
     max_words = 20  # ワードの最大数
 
-    words_info = {}
+    words_info = []
 
     if input_method == 'フォームで入力':
         key_prefix = 'form'
@@ -44,7 +44,7 @@ def show_conversation_page():
                 # カンマでワードを分割
                 words = [w.strip() for w in word_input.split(',') if w.strip()]
                 for word in words:
-                    words_info[word] = info_input
+                    words_info.append({'word': word, 'info': info_input})
 
     elif input_method == 'CSVファイルをアップロード':
         key_prefix = 'csv'
@@ -56,23 +56,26 @@ def show_conversation_page():
             df = df.iloc[:, :2]  # 最初の2列のみ（ワードと情報）
             df.columns = ['word', 'info']
             df = df.head(max_words)  # 最初の20行のみ
-            words_info = dict(zip(df['word'], df['info']))
+            words_info = df.to_dict('records')
 
             # フォームに反映
             num_words = len(words_info)
             st.success(f"{num_words} 個のワードが読み込まれました。必要に応じて編集してください。")
-            for i, (word, info) in enumerate(words_info.items()):
+            updated_words_info = []
+            for i, word_info in enumerate(words_info):
                 st.write(f"### ワード {i+1}")
-                word_input = st.text_input(f"ワード {i+1} を入力してください:", value=word, key=f"{key_prefix}_word_{i}")
-                info_input = st.text_area(f"ワード '{word_input}' の情報を入力してください:", value=info, height=100, key=f"{key_prefix}_info_{i}")
+                word_input = st.text_input(f"ワード {i+1} を入力してください:", value=word_info['word'], key=f"{key_prefix}_word_{i}")
+                info_input = st.text_area(f"ワード '{word_input}' の情報を入力してください:", value=word_info['info'], height=100, key=f"{key_prefix}_info_{i}")
                 if word_input:
                     # カンマでワードを分割
                     words = [w.strip() for w in word_input.split(',') if w.strip()]
                     for word in words:
-                        words_info[word] = info_input
+                        updated_words_info.append({'word': word, 'info': info_input})
+            # ループが終了した後に words_info を更新
+            words_info = updated_words_info
 
-    # AITuberのプロンプト入力
-    aituber_prompt = st.text_area("AITuberのプロンプトを入力してください:", height=150)
+    # キャラクターのプロンプト入力
+    character_prompt = st.text_area("キャラクターのプロンプトを入力してください:", height=150)
 
     # ユーザー設定のプロンプト入力
     user_prompt = st.text_area("ユーザー設定のプロンプトを入力してください:", height=150)
@@ -89,6 +92,12 @@ def show_conversation_page():
             st.error("タスク名を入力してください。")
         elif not api_key or api_key == "your_api_key":
             st.error("有効なOpenAI APIキーを入力してください。")
+        elif not character_prompt:
+            st.error("キャラクターのプロンプトを入力してください。")
+        elif not user_prompt:
+            st.error("ユーザー設定のプロンプトを入力してください。")
+        elif not words_info:
+            st.error("少なくとも1つのワードと情報を入力してください。")
         else:
             # バックエンドAPIにリクエストを送信
             try:
@@ -100,7 +109,7 @@ def show_conversation_page():
                         "task_name": task_name,
                         "words_info": words_info,
                         "num_turns_per_word": num_turns_per_word,
-                        "aituber_prompt": aituber_prompt,
+                        "character_prompt": character_prompt,
                         "user_prompt": user_prompt
                     }
 
@@ -119,26 +128,31 @@ def show_conversation_page():
                         for turn in conversations:
                             st.write(f"**Talk {turn['talk_num']}**")
                             st.write(f"**Word**: {turn['word']}")
+                            st.write(f"**Info**: {turn['info']}")
                             st.write(f"**User**: {turn['user']}")
                             st.write(f"**Assistant**: {turn['assistant']}")
                             st.write(f"**Token Count**: {turn['token_count']}")
-                            st.write(f"**Processing Time**: {turn['processing_time']:.2f} seconds")
+                            st.write(f"**Processing Time**: {float(turn['processing_time']):.2f} seconds")
                             st.write("---")
                         # 合計のトークン数と処理時間を表示
                         st.write(f"**Total Token Count**: {total_tokens}")
                         st.write(f"**Total Processing Time**: {total_processing_time:.2f} seconds")
-
-                        # DataFrameの作成
-                        df = pd.DataFrame(conversations, columns=["talk_num", "task_name", "word", "user", "assistant", "token_count", "processing_time"])
-
-                        # CSVのダウンロード
-                        csv = df.to_csv(index=False).encode('utf-8')
+                        
+                        # JSONデータの作成
+                        import json
+                        json_data = json.dumps({
+                            "task_name": task_name,
+                            "character_prompt": character_prompt,
+                            "user_prompt": user_prompt,
+                            "conversations": conversations
+                        }, ensure_ascii=False, indent=2).encode('utf-8')                        
+                        # JSONのダウンロード
                         st.download_button(
-                            label="CSVをダウンロード",
-                            data=csv,
-                            file_name=f"{task_name}_conversation.csv",
-                            mime='text/csv',
-                        )
+                            label="JSONをダウンロード",
+                            data=json_data,
+                            file_name=f"{task_name}_conversation.json",
+                            mime='application/json',
+                            )
                     else:
                         st.error(f"エラーが発生しました: {response.text}")
             except Exception as e:

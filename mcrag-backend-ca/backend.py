@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from conversation_generator import ConversationGenerator
 from question_generator import QuestionGenerator
 from answer_evaluator import AnswerEvaluator
+from typing import List, Dict
 
 
 
@@ -14,50 +15,57 @@ class ConversationRequest(BaseModel):
     temperature: float
     api_key: str
     task_name: str
-    words_info: dict
+    words_info: List[Dict[str, str]]
     num_turns_per_word: int  # 変数名を変更
-    aituber_prompt: str
+    character_prompt: str
     user_prompt: str
 
 # レスポンスボディのモデル定義
 class ConversationResponse(BaseModel):
-    conversations: list
+    conversations: List[Dict[str, str]]
     total_tokens: int
     total_processing_time: float
 
 @app.post("/generate_conversation", response_model=ConversationResponse)
 async def generate_conversation(request: ConversationRequest):
     try:
-        conversation_generator = ConversationGenerator(
+        generator = ConversationGenerator(
             temperature=request.temperature,
             api_key=request.api_key,
             task_name=request.task_name,
-            words_info=request.words_info
-        )
-        conversation = conversation_generator.run_conversation(
-            num_turns_per_word=request.num_turns_per_word,
-            aituber_prompt=request.aituber_prompt,
+            words_info=request.words_info,
+            character_prompt=request.character_prompt,
             user_prompt=request.user_prompt
         )
+        conversations = generator.run_conversation(
+            num_turns_per_word=request.num_turns_per_word
+        )
+        total_tokens = generator.total_tokens
+        total_processing_time = generator.total_processing_time
+
+        # データベース接続をクローズ
+        generator.close()
+
+        # 必要な情報を返す
         return {
-            "conversations": conversation,
-            "total_tokens": conversation_generator.total_tokens,
-            "total_processing_time": conversation_generator.total_processing_time
+            "conversations": conversations,
+            "total_tokens": total_tokens,
+            "total_processing_time": total_processing_time
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
     
 
 # リクエストボディのモデル定義
 class QuestionRequest(BaseModel):
     temperature: float
     api_key: str
-    # CSVファイルの内容を文字列として受け取る
-    csv_contents: list  # 各要素は CSV の文字列
+    json_data: Dict  # JSONデータを辞書として受け取る
 
 # レスポンスボディのモデル定義
 class QuestionResponse(BaseModel):
-    results: list
+    results: List[Dict[str, str]]
     total_tokens: int
     total_processing_time: float
 
@@ -68,17 +76,13 @@ async def generate_questions(request: QuestionRequest):
             temperature=request.temperature,
             api_key=request.api_key
         )
-        # CSVファイルの内容を DataFrame に変換
-        from io import StringIO
-        uploaded_files = []
-        for csv_content in request.csv_contents:
-            uploaded_file = StringIO(csv_content)
-            uploaded_file.name = "uploaded.csv"  # ダミーのファイル名
-            uploaded_files.append(uploaded_file)
-        # 会話チャンクの取得
-        conversation_chunks = question_generator.parse_csv_files(uploaded_files)
+
+        # JSONデータから会話チャンクを取得
+        conversation_chunks = question_generator.parse_json_data(request.json_data)
+
         # 質問と回答の生成
         results = question_generator.generate_question_and_answer(conversation_chunks)
+
         return {
             "results": results,
             "total_tokens": question_generator.total_tokens,
