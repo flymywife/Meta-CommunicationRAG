@@ -1,60 +1,45 @@
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from conversation_generator import ConversationGenerator
 from question_generator import QuestionGenerator
 from answer_evaluator import AnswerEvaluator
-from typing import List, Dict
+from typing import List, Dict, Any
+from fastapi.responses import JSONResponse
+
 
 
 
 app = FastAPI()
 
-# リクエストボディのモデル定義
-class ConversationRequest(BaseModel):
-    temperature: float
-    api_key: str
-    task_name: str
-    words_info: List[Dict[str, str]]
-    num_turns_per_word: int  # 変数名を変更
-    character_prompt: str
-    user_prompt: str
 
-# レスポンスボディのモデル定義
-class ConversationResponse(BaseModel):
-    conversations: List[Dict[str, str]]
-    total_tokens: int
-    total_processing_time: float
-
-@app.post("/generate_conversation", response_model=ConversationResponse)
-async def generate_conversation(request: ConversationRequest):
+@app.post("/generate_conversation")
+async def generate_conversation(request: Request):
     try:
+        # リクエストボディを取得
+        data = await request.json()
+
+        # ConversationGenerator を呼び出す
         generator = ConversationGenerator(
-            temperature=request.temperature,
-            api_key=request.api_key,
-            task_name=request.task_name,
-            words_info=request.words_info,
-            character_prompt=request.character_prompt,
-            user_prompt=request.user_prompt
+            temperature=data["temperature"],
+            api_key=data["api_key"],
+            task_name=data["task_name"],
+            words_info=data["words_info"],
+            character_prompt=data["character_prompt"],
+            user_prompt=data["user_prompt"]
         )
-        conversations = generator.run_conversation(
-            num_turns_per_word=request.num_turns_per_word
-        )
-        total_tokens = generator.total_tokens
-        total_processing_time = generator.total_processing_time
 
-        # データベース接続をクローズ
-        generator.close()
+        # 会話生成の実行
+        conversations = generator.run_conversation()
 
-        # 必要な情報を返す
-        return {
+        # 結果の返却
+        return JSONResponse({
             "conversations": conversations,
-            "total_tokens": total_tokens,
-            "total_processing_time": total_processing_time
-        }
+            "total_tokens": generator.total_tokens,
+            "total_processing_time": generator.total_processing_time
+        })
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
     
 
 # リクエストボディのモデル定義

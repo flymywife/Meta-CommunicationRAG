@@ -37,19 +37,42 @@ class ConversationGenerator:
         self.insert_words_info()
 
     def insert_words_info(self):
-        self.word_info_list = []  # ワード情報のリスト（word, info, word_info_id）
+        self.word_info_list = []  # ワード情報のリスト（word, infos, info, word_info_id）
         for word_info in self.words_info:
             word = word_info['word']
-            info = word_info['info']
+            infos = word_info['infos']
+            # wordに括弧や日本語の引用符が含まれているかチェック
+            if self.contains_invalid_characters(word):
+                # エラーを発生させる
+                raise ValueError(f"ワード '{word}' に無効な文字（括弧や日本語の引用符）が含まれています。処理を中止します。")
+            # infosを結合して一つのinfoにする
+            info = ' '.join(infos)
             word_info_id = self.database.insert_word_info(self.task_id, word, info)
             if word_info_id is not None:
-                self.word_info_list.append({'word': word, 'info': info, 'word_info_id': word_info_id})
+                # infosを含めてword_info_listに追加
+                self.word_info_list.append({
+                    'word': word,
+                    'infos': infos,
+                    'info': info,
+                    'word_info_id': word_info_id
+                })
+
+    def contains_invalid_characters(self, word):
+        """
+        ワードに括弧 () や日本語の引用符 「」 が含まれているかをチェックします。
+        含まれている場合は True を返します。
+        """
+        invalid_characters = ['(', ')', '（', '）', '「', '」']
+        for char in invalid_characters:
+            if char in word:
+                return True
+        return False
 
     def generate_message(self, messages):
         try:
             start_time = time.time()
             response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",  # 必要に応じてモデルを変更
+                model="gpt-4o-mini-2024-07-18",
                 messages=messages,
                 max_tokens=500,
                 temperature=self.temperature,
@@ -65,17 +88,20 @@ class ConversationGenerator:
             st.error(f"メッセージ生成中にエラーが発生しました: {e}")
             return "", 0, 0
 
-    def run_conversation(self, num_turns_per_word):
+    def run_conversation(self):
         all_conversations = []
 
         for word_info in self.word_info_list:
             word = word_info['word']
-            info = word_info['info']
+            infos = word_info['infos']
             word_info_id = word_info['word_info_id']
 
-            # 会話の生成
+            # 会話履歴を初期化
+            conversation_history = []
+
+            # 各情報に対して会話を生成
             conversation, tokens, processing_time = self.generate_conversation_with_word(
-                word, info, num_turns_per_word, word_info_id
+                word, infos, word_info_id, conversation_history
             )
 
             # 結果の累積
@@ -85,30 +111,26 @@ class ConversationGenerator:
 
         return all_conversations
 
-    def generate_conversation_with_word(self, word, info, num_turns, word_info_id):
+    def generate_conversation_with_word(self, word, infos, word_info_id, conversation_history):
         conversation = []
         tokens = 0
         processing_time = 0
         word_used = False  # ワードが既に使用されたかを追跡
 
-        for turn in range(num_turns):
-            self.global_talk_num += 1  # talk_numをインクリメント
+        for info_index, info in enumerate(infos):
+            if not info.strip():
+                continue  # 情報が空の場合はスキップ
 
             # これまでの会話履歴を取得
-            conversation_messages = self.convert_conversation_to_messages(conversation)
+            conversation_messages = self.convert_conversation_to_messages(conversation_history)
 
-            # ユーザーの発言生成
-            if not word_used:
-                # 初回のユーザー発言にワードと情報を含める
-                user_content = f"""
-以下のワードとその情報を使って、自然な会話を始めてください。
+            # ユーザー発言にワードと情報を含める
+            user_content = f"""
+Use the following words as the subject of the conversation and use the word information provided to start a natural conversation.
 
-ワード: {word}
-情報: {info}
+Word: {word}
+Infomation: {info}
 """
-            else:
-                # 二回目以降は会話を続ける
-                user_content = "会話を続けてください。"
 
             user_messages = [
                 {"role": "system", "content": self.user_prompt},
@@ -136,13 +158,15 @@ class ConversationGenerator:
             processing_time += time_assistant
 
             # 二回目以降の会話でワードを置換
-            if word_used and turn >= 1:
+            if word_used and info_index >= 1:
                 # Function Calling を使用して置換語を取得し、ユーザーとアシスタントの発言を置換
                 user_response = self.replace_word_in_text(word, user_response)
                 assistant_response = self.replace_word_in_text(word, assistant_response)
 
+            self.global_talk_num += 1  # talk_numをインクリメント
+
             # ユーザーの発言を会話に追加
-            conversation.append({
+            conversation_entry = {
                 "talk_num": str(self.global_talk_num),
                 "task_name": self.task_name,
                 "word": word,
@@ -152,11 +176,15 @@ class ConversationGenerator:
                 "token_count": str(token_count_user + token_count_assistant),
                 "processing_time": str(time_user + time_assistant),
                 "temperature": str(self.temperature),
-                "created_at": self.database.get_current_timestamp()
-            })
+                "created_at": self.database.get_current_timestamp(),
+                "info_num": info_index + 1
+            }
+
+            conversation.append(conversation_entry)
+            conversation_history.append(conversation_entry)
 
             # データベースに保存
-            entry = conversation[-1].copy()
+            entry = conversation_entry.copy()
             entry['task_id'] = str(self.task_id)
             entry['word_info_id'] = word_info_id
             self.database.insert_conversation(entry)
@@ -169,14 +197,8 @@ class ConversationGenerator:
         replacement = replacement_info.get('replacement', 'それ')
 
         # ワードのバリエーションを生成
-        word_variants = [word]
-        if '(' in word and ')' in word:
-            # 括弧内と括弧外のワードを取得
-            word_without_parens = re.sub(r'\s*\(.*?\)\s*', '', word).strip()
-            word_inside_parens = re.search(r'\((.*?)\)', word).group(1).strip()
-            word_variants.extend([word_without_parens, word_inside_parens])
-        else:
-            word_variants.append(word.strip())
+        word_variants = [word.strip()]
+        # 括弧や引用符が含まれないため、この部分は不要になりました
 
         # 各バリエーションで置換
         for variant in word_variants:
@@ -184,25 +206,18 @@ class ConversationGenerator:
             text = pattern.sub(replacement, text)
         return text
 
-
     def get_replacement_via_function_calling(self, word, context):
         try:
             # ワードのバリエーションを生成
-            word_variants = [word]
-            if '(' in word and ')' in word:
-                # 括弧内と括弧外のワードを取得
-                word_without_parens = re.sub(r'\s*\(.*?\)\s*', '', word).strip()
-                word_inside_parens = re.search(r'\((.*?)\)', word).group(1).strip()
-                word_variants.extend([word_without_parens, word_inside_parens])
-            else:
-                word_variants.append(word.strip())
+            word_variants = [word.strip()]
+            # 括弧や引用符が含まれないため、この部分は不要になりました
 
             # バリエーションをコンマ区切りで結合
             word_list = ', '.join(f"'{w}'" for w in word_variants)
 
             # Function Calling を使用して置換語を取得
             response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",  # Function Calling に対応したモデル
+                model="gpt-4o-mini-2024-07-18",
                 messages=[
                     {
                         "role": "system",
@@ -211,11 +226,11 @@ class ConversationGenerator:
                     {
                         "role": "user",
                         "content": f"""
-    Replace the words {word_list} in the following context with a demonstrative pronoun or a natural paraphrase in Japanese. Provide only the replacement word.
+Replace the words {word_list} in the following context with a demonstrative pronoun or a natural paraphrase in Japanese. Provide only the replacement word.
 
-    Context:
-    {context}
-    """
+Context:
+{context}
+"""
                     }
                 ],
                 functions=[
@@ -252,17 +267,9 @@ class ConversationGenerator:
                 "replacement": "それ"
             }
 
-
     def word_in_text(self, word, text):
         # ワードのバリエーションを生成
-        word_variants = [word]
-        if '(' in word and ')' in word:
-            # 括弧内と括弧外のワードを取得
-            word_without_parens = re.sub(r'\s*\(.*?\)\s*', '', word).strip()
-            word_inside_parens = re.search(r'\((.*?)\)', word).group(1).strip()
-            word_variants.extend([word_without_parens, word_inside_parens])
-        else:
-            word_variants.append(word.strip())
+        word_variants = [word.strip()]
 
         # 各バリエーションで検索
         for variant in word_variants:
@@ -270,7 +277,6 @@ class ConversationGenerator:
             if pattern.search(text):
                 return True
         return False
-
 
     def convert_conversation_to_messages(self, conversation):
         messages = []

@@ -27,6 +27,7 @@ def show_conversation_page():
     input_method = st.radio("ワードと情報の入力方法を選択してください:", ('フォームで入力', 'CSVファイルをアップロード'))
 
     max_words = 20  # ワードの最大数
+    max_infos = 5   # 情報の最大数
 
     words_info = []
 
@@ -39,12 +40,15 @@ def show_conversation_page():
         for i in range(int(num_words)):
             st.write(f"### ワード {i+1}")
             word_input = st.text_input(f"ワード {i+1} を入力してください:", key=f"{key_prefix}_word_{i}")
-            info_input = st.text_area(f"ワード '{word_input}' の情報を入力してください:", height=100, key=f"{key_prefix}_info_{i}")
+            infos = []
+            for j in range(max_infos):
+                info_input = st.text_area(f"ワード '{word_input}' の情報 {j+1} を入力してください:", height=100, key=f"{key_prefix}_info_{i}_{j}")
+                infos.append(info_input.strip())
             if word_input:
                 # カンマでワードを分割
                 words = [w.strip() for w in word_input.split(',') if w.strip()]
                 for word in words:
-                    words_info.append({'word': word, 'info': info_input})
+                    words_info.append({'word': word, 'infos': infos})
 
     elif input_method == 'CSVファイルをアップロード':
         key_prefix = 'csv'
@@ -52,11 +56,34 @@ def show_conversation_page():
         uploaded_file = st.file_uploader("ワードと情報が記載されたCSVファイルをアップロードしてください（ヘッダー行が必要です）:", type="csv")
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file)
-            # ヘッダーの数を20個に制限
-            df = df.iloc[:, :2]  # 最初の2列のみ（ワードと情報）
-            df.columns = ['word', 'info']
+            # ヘッダーの検証
+            expected_columns = ['word'] + [f'info{i+1}' for i in range(max_infos)]
+            if list(df.columns) != expected_columns:
+                st.error(f"CSVのヘッダーが正しくありません。ヘッダーは {', '.join(expected_columns)} である必要があります。")
+                return
+            # 必要な列のみを取得
+            df = df.reindex(columns=expected_columns)
             df = df.head(max_words)  # 最初の20行のみ
-            words_info = df.to_dict('records')
+            # NaN を空文字列に変換
+            df = df.fillna('')
+            words_info = []
+            for index, row in df.iterrows():
+                word = str(row['word']).strip()
+                if not word:
+                    st.error(f"{index+1} 行目の 'word' が空です。'word' は必須です。")
+                    return
+                info1 = str(row['info1']).strip()
+                if not info1:
+                    st.error(f"{index+1} 行目の 'info1' が空です。'info1' は必須です。")
+                    return
+                infos = []
+                for i in range(max_infos):
+                    info_key = f'info{i+1}'
+                    if info_key in row:
+                        info = str(row[info_key]).strip()
+                        if info:
+                            infos.append(info)
+                words_info.append({'word': word, 'infos': infos})
 
             # フォームに反映
             num_words = len(words_info)
@@ -65,12 +92,17 @@ def show_conversation_page():
             for i, word_info in enumerate(words_info):
                 st.write(f"### ワード {i+1}")
                 word_input = st.text_input(f"ワード {i+1} を入力してください:", value=word_info['word'], key=f"{key_prefix}_word_{i}")
-                info_input = st.text_area(f"ワード '{word_input}' の情報を入力してください:", value=word_info['info'], height=100, key=f"{key_prefix}_info_{i}")
+                infos = []
+                num_infos = len(word_info['infos'])
+                for j in range(num_infos):
+                    info_value = word_info['infos'][j]
+                    info_input = st.text_area(f"ワード '{word_input}' の情報 {j+1} を入力してください:", value=info_value, height=100, key=f"{key_prefix}_info_{i}_{j}")
+                    infos.append(info_input.strip())
                 if word_input:
                     # カンマでワードを分割
                     words = [w.strip() for w in word_input.split(',') if w.strip()]
                     for word in words:
-                        updated_words_info.append({'word': word, 'info': info_input})
+                        updated_words_info.append({'word': word, 'infos': infos})
             # ループが終了した後に words_info を更新
             words_info = updated_words_info
 
@@ -82,9 +114,6 @@ def show_conversation_page():
 
     # Temperatureのスライダー
     temperature = st.slider("Temperatureを選択してください:", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
-
-    # ワードの全ての情報が含まれるまでの会話数を1-5まで指定
-    num_turns_per_word = st.slider("ワードの情報が全て含まれるまでの会話数を選択してください (1-5):", min_value=1, max_value=5, value=1, step=1)
 
     # 会話生成ボタン
     if st.button("会話生成"):
@@ -108,7 +137,6 @@ def show_conversation_page():
                         "api_key": api_key,
                         "task_name": task_name,
                         "words_info": words_info,
-                        "num_turns_per_word": num_turns_per_word,
                         "character_prompt": character_prompt,
                         "user_prompt": user_prompt
                     }
@@ -139,7 +167,6 @@ def show_conversation_page():
                         st.write(f"**Total Processing Time**: {total_processing_time:.2f} seconds")
                         
                         # JSONデータの作成
-                        import json
                         json_data = json.dumps({
                             "task_name": task_name,
                             "character_prompt": character_prompt,

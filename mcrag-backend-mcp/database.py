@@ -17,7 +17,7 @@ class ConversationDatabase:
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS tasks (
             task_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_name TEXT NOT NULL,
+            task_name TEXT NOT NULL UNIQUE,
             character_prompt TEXT,
             user_prompt TEXT
         )
@@ -70,6 +70,12 @@ class ConversationDatabase:
             self.cursor.execute(insert_sql, data)
             self.conn.commit()
             return self.cursor.lastrowid  # 挿入したタスクのIDを返す
+        except sqlite3.IntegrityError as e:
+            if 'UNIQUE constraint failed: tasks.task_name' in str(e):
+                st.error(f"タスク名 '{task['task_name']}' は既に存在します。別のタスク名を使用してください。")
+            else:
+                st.error(f"タスクの挿入中にエラーが発生しました: {e}")
+            return None
         except Exception as e:
             st.error(f"タスクの挿入中にエラーが発生しました: {e}")
             return None
@@ -108,6 +114,8 @@ class ConversationDatabase:
             self.cursor.execute(insert_sql, data)
             self.conn.commit()
         except sqlite3.IntegrityError as e:
+            st.error(f"データベースへの挿入中にエラーが発生しました: {e}")
+        except Exception as e:
             st.error(f"データベースへの挿入中にエラーが発生しました: {e}")
 
     def close(self):
