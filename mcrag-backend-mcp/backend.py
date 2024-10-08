@@ -6,6 +6,7 @@ from question_generator import QuestionGenerator
 from answer_evaluator import AnswerEvaluator
 from typing import List, Dict, Any
 from fastapi.responses import JSONResponse
+import logging
 
 
 
@@ -39,79 +40,100 @@ async def generate_conversation(request: Request):
             "total_processing_time": generator.total_processing_time
         })
     except Exception as e:
+        logging.error(f"Error in /generate_conversation: {str(e)}")
         return JSONResponse(content={"detail": str(e)}, status_code=500)
     
 
-# リクエストボディのモデル定義
-class QuestionRequest(BaseModel):
-    temperature: float
-    api_key: str
-    json_data: Dict  # JSONデータを辞書として受け取る
 
-# レスポンスボディのモデル定義
-class QuestionResponse(BaseModel):
-    results: List[Dict[str, str]]
-    total_tokens: int
-    total_processing_time: float
 
-@app.post("/generate_questions", response_model=QuestionResponse)
-async def generate_questions(request: QuestionRequest):
+@app.post("/generate_questions")
+async def generate_questions(request: Request):
     try:
+        # リクエストボディを取得
+        data = await request.json()
+
+        # 必要なフィールドが存在するかチェック
+        required_fields = ["temperature", "api_key", "json_data"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+        temperature = data["temperature"]
+        api_key = data["api_key"]
+        json_data = data["json_data"]
+
+        # QuestionGenerator を呼び出す
         question_generator = QuestionGenerator(
-            temperature=request.temperature,
-            api_key=request.api_key
+            temperature=temperature,
+            api_key=api_key
         )
 
         # JSONデータから会話チャンクを取得
-        conversation_chunks = question_generator.parse_json_data(request.json_data)
+        conversation_chunks = question_generator.parse_json_data(json_data)
 
         # 質問と回答の生成
         results = question_generator.generate_question_and_answer(conversation_chunks)
 
-        return {
+        # レスポンスの準備
+        response_data = {
             "results": results,
             "total_tokens": question_generator.total_tokens,
             "total_processing_time": question_generator.total_processing_time
         }
+
+        return JSONResponse(content=response_data, status_code=200)
+
+    except HTTPException as he:
+        # 既に定義されたHTTPExceptionをそのまま返す
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in /generate_questions: {str(e)}")
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
 
 
-# リクエストボディのモデル定義
-class EvaluationRequest(BaseModel):
-    temperature: float
-    api_key: str
-    # CSVファイルの内容を文字列として受け取る
-    csv_content: str  # CSVの文字列
 
-# レスポンスボディのモデル定義
-class EvaluationResponse(BaseModel):
-    results: list
-    total_tokens: int
-    total_processing_time: float
-
-@app.post("/evaluate_answers", response_model=EvaluationResponse)
-async def evaluate_answers(request: EvaluationRequest):
+@app.post("/evaluate_answers")
+async def evaluate_answers(request: Request):
     try:
-        answer_evaluator = AnswerEvaluator(
-            temperature=request.temperature,
-            api_key=request.api_key
-        )
-        # CSVファイルの内容を DataFrame に変換
-        from io import StringIO
-        csv_file = StringIO(request.csv_content)
-        df = pd.read_csv(csv_file)
-        # 必要な列が存在するか確認
-        required_columns = ['talk_nums', 'task_name', 'word', 'query', 'answer']
-        if not all(col in df.columns for col in required_columns):
-            raise HTTPException(status_code=400, detail="CSVに必要な列がありません。")
+        data = await request.json()
+        logging.info(f"Received data for evaluate_answers: {data}")
 
-        # 回答の評価
-        results = answer_evaluator.evaluate_answers(df)
-        return {
+        required_fields = ["temperature", "api_key", "json_data"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+        temperature = data["temperature"]
+        api_key = data["api_key"]
+        json_data = data["json_data"]
+
+        # JSONデータがリスト形式かどうかチェック
+        if not isinstance(json_data, list):
+            raise HTTPException(status_code=422, detail="json_data must be a list of dictionaries.")
+
+        # 必要なキーが存在するか確認
+        required_keys = ['talk_nums', 'task_name', 'word', 'query', 'answer']
+        for entry in json_data:
+            if not all(key in entry for key in required_keys):
+                raise HTTPException(status_code=400, detail="Each entry in json_data must contain all required keys.")
+
+        answer_evaluator = AnswerEvaluator(
+            temperature=temperature,
+            api_key=api_key
+        )
+
+        results = answer_evaluator.evaluate_answers(json_data)
+
+        response_data = {
             "results": results,
             "total_tokens": answer_evaluator.total_tokens,
             "total_processing_time": answer_evaluator.total_processing_time
         }
+
+        return JSONResponse(content=response_data, status_code=200)
+
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error in /evaluate_answers: {str(e)}")
+        return JSONResponse(content={"detail": str(e)}, status_code=500)

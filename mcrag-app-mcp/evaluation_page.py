@@ -1,3 +1,5 @@
+# evaluation_page.py
+
 import streamlit as st
 import os
 from dotenv import load_dotenv
@@ -21,26 +23,34 @@ def show_evaluation_page():
     # Temperatureのスライダー
     temperature = st.sidebar.slider("Temperatureを選択してください:", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
 
-    # CSVファイルのアップロード
-    uploaded_file = st.file_uploader("質問と回答のCSVファイルをアップロードしてください:", type="csv")
+    # JSONファイルのアップロード
+    uploaded_file = st.file_uploader("質問と回答のJSONファイルをアップロードしてください:", type="json")
 
     # 評価ボタン
     if st.button("回答を評価"):
         if not api_key or api_key == "your_api_key":
             st.error("有効なOpenAI APIキーを入力してください。")
         elif not uploaded_file:
-            st.error("CSVファイルをアップロードしてください。")
+            st.error("JSONファイルをアップロードしてください。")
         else:
             try:
                 with st.spinner("回答を評価しています..."):
-                    # CSVファイルの内容を読み込む
-                    csv_content = uploaded_file.read().decode('utf-8')
+                    # JSONファイルの内容を読み込む
+                    try:
+                        json_data = json.load(uploaded_file)
+                        if not isinstance(json_data, list):
+                            st.error("アップロードされたJSONファイルはリスト形式である必要があります。")
+                            return
+                        st.success("JSONファイルが正常に読み込まれました。")
+                    except Exception as e:
+                        st.error(f"JSONファイルの読み込み中にエラーが発生しました: {e}")
+                        return
 
                     # リクエストボディの作成
                     payload = {
                         "temperature": temperature,
                         "api_key": api_key,
-                        "csv_content": csv_content
+                        "json_data": json_data
                     }
 
                     # バックエンドAPIのエンドポイント（ローカルホスト）
@@ -81,6 +91,11 @@ def show_evaluation_page():
                             mime='text/csv',
                         )
                     else:
-                        st.error(f"エラーが発生しました: {response.text}")
+                        # エラーメッセージを表示
+                        try:
+                            error_detail = response.json().get("detail", response.text)
+                        except json.JSONDecodeError:
+                            error_detail = response.text
+                        st.error(f"エラーが発生しました: {error_detail}")
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")

@@ -1,10 +1,10 @@
 # question_generator.py
 
-import openai
 import pandas as pd
 import streamlit as st
 import time
 import json
+from call_gpt import GPTClient  # GPTClientクラスをインポート
 
 class QuestionGenerator:
     def __init__(self, temperature, api_key):
@@ -12,7 +12,9 @@ class QuestionGenerator:
         self.api_key = api_key
         self.total_tokens = 0
         self.total_processing_time = 0
-        openai.api_key = self.api_key  # APIキーの設定
+
+        # GPTClientのインスタンスを作成
+        self.gpt_client = GPTClient(api_key=self.api_key)
 
     def generate_question_and_answer(self, conversation_chunks):
         results = []
@@ -87,36 +89,46 @@ class QuestionGenerator:
 - 質問の難易度は中級から上級レベルにし、会話の内容を十分に理解していないと答えられないようにしてください。
 - キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
 """
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",  # Function Calling に対応したモデル
+            # Function Callingの定義
+            functions = [
+                {
+                    "name": "generate_question",
+                    "description": "会話内容に関する質問を生成します。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "生成された質問。"
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                }
+            ]
+
+            # GPT呼び出し
+            response = self.gpt_client.call_gpt_function(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *conversation_messages,
                     {"role": "user", "content": "上記の会話内容に関する質問を一つ作成してください。"}
                 ],
-                functions=[
-                    {
-                        "name": "generate_question",
-                        "description": "会話内容に関する質問を生成します。",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "question": {
-                                    "type": "string",
-                                    "description": "生成された質問。"
-                                }
-                            },
-                            "required": ["question"]
-                        }
-                    }
-                ],
+                functions=functions,
                 function_call={"name": "generate_question"},
                 max_tokens=500,
                 temperature=self.temperature,
             )
 
-            function_response = response["choices"][0]["message"]["function_call"]
-            arguments = json.loads(function_response["arguments"])
+            if not response:
+                return "", 0, 0
+
+            function_response = response["choices"][0]["message"].get("function_call")
+            if not function_response:
+                st.error("Function Callingのレスポンスが得られませんでした。")
+                return "", 0, 0
+
+            arguments = json.loads(function_response.get("arguments", "{}"))
             question = arguments.get("question", "")
             token_count = response['usage']['total_tokens']
             end_time = time.time()
@@ -146,17 +158,19 @@ class QuestionGenerator:
     - キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
     """
 
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",  # モデルはそのまま
+            # GPT呼び出し
+            response = self.gpt_client.call_gpt(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *conversation_messages,
                     {"role": "user", "content": question}
                 ],
-                # Function Calling を使用せず、通常の応答として回答を取得
                 max_tokens=1000,
                 temperature=self.temperature,
             )
+
+            if not response:
+                return "", 0, 0
 
             message = response["choices"][0]["message"]
             answer = message.get('content', '').strip()

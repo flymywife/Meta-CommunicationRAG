@@ -1,12 +1,12 @@
 # conversation_generator.py
 
-import openai
 import json
 import pandas as pd
 import streamlit as st
 import time
 import re
 from database import ConversationDatabase  # データベースクラスをインポート
+from call_gpt import GPTClient  # GPTClientクラスをインポート
 
 class ConversationGenerator:
     def __init__(self, temperature, api_key, task_name, words_info, character_prompt, user_prompt, db_file='conversation_data.db'):
@@ -19,7 +19,9 @@ class ConversationGenerator:
         self.total_tokens = 0
         self.total_processing_time = 0
         self.global_talk_num = 0  # 全体のtalk_numを管理
-        openai.api_key = self.api_key  # APIキーの設定
+
+        # GPTClientのインスタンスを作成
+        self.gpt_client = GPTClient(api_key=self.api_key)
 
         # データベースのセットアップ
         self.database = ConversationDatabase(db_file=db_file)
@@ -71,14 +73,16 @@ class ConversationGenerator:
     def generate_message(self, messages):
         try:
             start_time = time.time()
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",
+            response = self.gpt_client.call_gpt(
                 messages=messages,
                 max_tokens=500,
-                temperature=self.temperature,
+                temperature=self.temperature
             )
             end_time = time.time()
             processing_time = end_time - start_time
+
+            if not response:
+                return "", 0, 0
 
             message = response['choices'][0]['message']['content'].strip()
             token_count = response['usage']['total_tokens']
@@ -128,8 +132,8 @@ class ConversationGenerator:
             user_content = f"""
 Use the following words as the subject of the conversation and use the word information provided to start a natural conversation.
 
-Word: {word}
-Infomation: {info}
+ワード: {word}
+情報: {info}
 """
 
             user_messages = [
@@ -215,47 +219,55 @@ Infomation: {info}
             # バリエーションをコンマ区切りで結合
             word_list = ', '.join(f"'{w}'" for w in word_variants)
 
-            # Function Calling を使用して置換語を取得
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an assistant that provides a replacement for given words in the context, using demonstrative pronouns or natural paraphrases in Japanese."
-                    },
-                    {
-                        "role": "user",
-                        "content": f"""
-Replace the words {word_list} in the following context with a demonstrative pronoun or a natural paraphrase in Japanese. Provide only the replacement word.
+            # システムプロンプト
+            system_prompt = "You are an assistant that provides a replacement for given words in the context, using demonstrative pronouns or natural paraphrases in Japanese."
+
+            user_content = f"""
+Replace the word {word_list} in the following context with a demonstrative pronoun or a natural paraphrase in Japanese. Provide only the replacement word.
 
 Context:
 {context}
 """
+
+            # Function Callingの定義
+            functions = [
+                {
+                    "name": "replace_word",
+                    "description": "Provides a replacement for the specified words.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "replacement": {
+                                "type": "string",
+                                "description": "The replacement word or pronoun in Japanese."
+                            }
+                        },
+                        "required": ["replacement"]
                     }
+                }
+            ]
+
+            # GPT呼び出し
+            response = self.gpt_client.call_gpt_function(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
                 ],
-                functions=[
-                    {
-                        "name": "replace_word",
-                        "description": "Provides a replacement for the specified words.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "replacement": {
-                                    "type": "string",
-                                    "description": "The replacement word or pronoun in Japanese."
-                                }
-                            },
-                            "required": ["replacement"]
-                        }
-                    }
-                ],
+                functions=functions,
                 function_call={"name": "replace_word"},
                 max_tokens=50,
                 temperature=self.temperature,
             )
 
-            function_response = response["choices"][0]["message"]["function_call"]
-            arguments = json.loads(function_response["arguments"])
+            if not response:
+                return {"replacement": "それ"}
+
+            function_response = response["choices"][0]["message"].get("function_call")
+            if not function_response:
+                st.error("Function Callingのレスポンスが得られませんでした。")
+                return {"replacement": "それ"}
+
+            arguments = json.loads(function_response.get("arguments", "{}"))
             replacement = arguments.get("replacement", "それ")
             return {
                 "replacement": replacement
@@ -270,6 +282,7 @@ Context:
     def word_in_text(self, word, text):
         # ワードのバリエーションを生成
         word_variants = [word.strip()]
+        # 括弧や引用符が含まれないため、この部分は不要になりました
 
         # 各バリエーションで検索
         for variant in word_variants:

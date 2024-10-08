@@ -1,8 +1,9 @@
-import openai
-import pandas as pd
+# answer_evaluator.py
+
 import streamlit as st
 import time
 import json
+from call_gpt import GPTClient  # GPTClientクラスをインポート
 
 class AnswerEvaluator:
     def __init__(self, temperature, api_key):
@@ -10,21 +11,24 @@ class AnswerEvaluator:
         self.api_key = api_key
         self.total_tokens = 0
         self.total_processing_time = 0
-        openai.api_key = self.api_key  # APIキーの設定
 
-    def evaluate_answers(self, df):
+        # GPTClientのインスタンスを作成
+        self.gpt_client = GPTClient(api_key=self.api_key)
+
+    def evaluate_answers(self, json_data):
         results = []
-        for idx, row in df.iterrows():
-            talk_nums = row['talk_nums']
-            task_name = row['task_name']
-            word = row['word']
-            query = row['query']
-            expected_answer = row['answer']
+        # JSONデータをリストとして扱う
+        data_list = json_data if isinstance(json_data, list) else [json_data]
+
+        for idx, entry in enumerate(data_list):
+            talk_nums = entry.get('talk_nums', '')
+            task_name = entry.get('task_name', '')
+            word = entry.get('word', '')
+            query = entry.get('query', '')
+            expected_answer = entry.get('answer', '')
 
             # GPTにクエリを送信
-            start_time = time.time()
             response_text, token_count, processing_time = self.generate_response(query)
-            end_time = time.time()
 
             # 回答の比較
             is_correct = self.compare_answers(expected_answer, response_text)
@@ -49,14 +53,18 @@ class AnswerEvaluator:
     def generate_response(self, query):
         try:
             start_time = time.time()
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini-2024-07-18",  # 必要に応じてモデルを変更
+            # GPT呼び出し
+            response = self.gpt_client.call_gpt(
                 messages=[
                     {"role": "user", "content": query},
                 ],
                 max_tokens=500,
                 temperature=self.temperature,
             )
+
+            if not response:
+                return "", 0, 0
+
             end_time = time.time()
             processing_time = end_time - start_time
 
