@@ -2,10 +2,12 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from conversation_generator import ConversationGenerator
-from question_generator import QuestionGenerator
+from question_generator import QuestionGenerator, DataNotFoundError  # DataNotFoundError をインポート
 from answer_evaluator import AnswerEvaluator
 from typing import List, Dict, Any
 from fastapi.responses import JSONResponse
+from vector_db import vectorize_and_store
+from database import DataAlreadyExistsError  # 追加
 import logging
 
 
@@ -44,8 +46,6 @@ async def generate_conversation(request: Request):
         return JSONResponse(content={"detail": str(e)}, status_code=500)
     
 
-
-
 @app.post("/generate_questions")
 async def generate_questions(request: Request):
     try:
@@ -53,14 +53,14 @@ async def generate_questions(request: Request):
         data = await request.json()
 
         # 必要なフィールドが存在するかチェック
-        required_fields = ["temperature", "api_key", "json_data"]
+        required_fields = ["temperature", "api_key", "task_name"]
         for field in required_fields:
             if field not in data:
                 raise HTTPException(status_code=400, detail=f"Missing field: {field}")
 
         temperature = data["temperature"]
         api_key = data["api_key"]
-        json_data = data["json_data"]
+        task_name = data["task_name"]
 
         # QuestionGenerator を呼び出す
         question_generator = QuestionGenerator(
@@ -68,11 +68,8 @@ async def generate_questions(request: Request):
             api_key=api_key
         )
 
-        # JSONデータから会話チャンクを取得
-        conversation_chunks = question_generator.parse_json_data(json_data)
-
         # 質問と回答の生成
-        results = question_generator.generate_question_and_answer(conversation_chunks)
+        results = question_generator.generate_questions_and_answers(task_name)
 
         # レスポンスの準備
         response_data = {
@@ -83,6 +80,12 @@ async def generate_questions(request: Request):
 
         return JSONResponse(content=response_data, status_code=200)
 
+    except DataAlreadyExistsError as e:
+        # データが既に存在する場合のエラー処理
+        raise HTTPException(status_code=400, detail=str(e))
+    except DataNotFoundError as e:
+        # データが見つからない場合のエラー処理
+        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException as he:
         # 既に定義されたHTTPExceptionをそのまま返す
         raise he
@@ -91,49 +94,83 @@ async def generate_questions(request: Request):
         return JSONResponse(content={"detail": str(e)}, status_code=500)
 
 
-
 @app.post("/evaluate_answers")
 async def evaluate_answers(request: Request):
     try:
+        # リクエストボディを取得
         data = await request.json()
-        logging.info(f"Received data for evaluate_answers: {data}")
+    except Exception as e:
+        logging.error(f"リクエストボディの解析中にエラーが発生しました: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body.")
 
-        required_fields = ["temperature", "api_key", "json_data"]
+    try:
+        required_fields = ["temperature", "api_key", "task_name"]
         for field in required_fields:
             if field not in data:
                 raise HTTPException(status_code=400, detail=f"Missing field: {field}")
 
         temperature = data["temperature"]
         api_key = data["api_key"]
-        json_data = data["json_data"]
+        task_name = data["task_name"]
 
-        # JSONデータがリスト形式かどうかチェック
-        if not isinstance(json_data, list):
-            raise HTTPException(status_code=422, detail="json_data must be a list of dictionaries.")
+        # AnswerEvaluator をインスタンス化
+        evaluator = AnswerEvaluator(api_key=api_key, temperature=temperature)
 
-        # 必要なキーが存在するか確認
-        required_keys = ['talk_nums', 'task_name', 'word', 'query', 'answer']
-        for entry in json_data:
-            if not all(key in entry for key in required_keys):
-                raise HTTPException(status_code=400, detail="Each entry in json_data must contain all required keys.")
+        # 回答の評価を実行
+        results = evaluator.evaluate_answers(task_name)
 
-        answer_evaluator = AnswerEvaluator(
-            temperature=temperature,
-            api_key=api_key
-        )
+        # 合計トークン数と処理時間を取得
+        total_tokens = evaluator.total_tokens
+        total_processing_time = evaluator.total_processing_time
 
-        results = answer_evaluator.evaluate_answers(json_data)
-
+        # レスポンスの準備
         response_data = {
             "results": results,
-            "total_tokens": answer_evaluator.total_tokens,
-            "total_processing_time": answer_evaluator.total_processing_time
+            "total_tokens": total_tokens,
+            "total_processing_time": total_processing_time
+        }
+
+        return JSONResponse(content=response_data, status_code=200)
+
+    except DataNotFoundError as e:
+        # データが見つからない場合のエラー処理
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"Error in /evaluate_answers: {str(e)}")
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
+
+
+
+@app.post("/vectorize_conversations")
+async def vectorize_conversations(request: Request):
+    try:
+        data = await request.json()
+        logging.info(f"Received data for vectorize_conversations: {data}")
+
+        # 必要なフィールドが存在するかチェック
+        required_fields = ["api_key", "task_name"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+
+        api_key = data["api_key"]
+        task_name = data["task_name"]
+
+        # vector_db.py の関数を呼び出す
+        added_count = vectorize_and_store(api_key=api_key, task_name=task_name)
+
+        # 結果の返却
+        response_data = {
+            "message": f"Successfully vectorized and stored {added_count} conversations."
         }
 
         return JSONResponse(content=response_data, status_code=200)
 
     except HTTPException as he:
+        # 既に定義されたHTTPExceptionをそのまま返す
         raise he
     except Exception as e:
-        logging.error(f"Error in /evaluate_answers: {str(e)}")
+        logging.error(f"Error in /vectorize_conversations: {str(e)}")
         return JSONResponse(content={"detail": str(e)}, status_code=500)

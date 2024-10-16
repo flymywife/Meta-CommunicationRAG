@@ -1,13 +1,16 @@
 # question_generator.py
 
-import pandas as pd
-import streamlit as st
 import time
 import json
 from call_gpt import GPTClient  # GPTClientクラスをインポート
+from database import ConversationDatabase, DataAlreadyExistsError
+
+class DataNotFoundError(Exception):
+    """データが見つからない場合の例外クラス"""
+    pass
 
 class QuestionGenerator:
-    def __init__(self, temperature, api_key):
+    def __init__(self, temperature, api_key, db_file='conversation_data.db'):
         self.temperature = temperature
         self.api_key = api_key
         self.total_tokens = 0
@@ -16,14 +19,26 @@ class QuestionGenerator:
         # GPTClientのインスタンスを作成
         self.gpt_client = GPTClient(api_key=self.api_key)
 
-    def generate_question_and_answer(self, conversation_chunks):
+        # データベースのインスタンスを作成
+        self.db = ConversationDatabase(db_file=db_file)
+
+    def generate_questions_and_answers(self, task_name):
+        # 重複チェック: generated_qas テーブルに既に task_name が存在するか確認
+        if self.db.has_generated_qas(task_name):
+            raise DataAlreadyExistsError(f"タスク名 '{task_name}' の質問と回答は既に生成されています。")
+
+        # データベースから会話履歴を取得
+        conversation_chunks = self.get_conversation_chunks(task_name)
+
+        if not conversation_chunks:
+            raise DataNotFoundError(f"タスク名 '{task_name}' に対応するデータが見つかりません。")
+
         results = []
         existing_keys = set()  # 重複チェック用のセット
 
         for chunk in conversation_chunks:
             talk_nums = [str(entry['talk_num']) for entry in chunk]
             talk_nums_str = ','.join(talk_nums)
-            task_name = chunk[0].get('task_name', '')
             word = chunk[0].get('word', '')
             character_prompt = chunk[0].get('character_prompt', '')
             user_prompt = chunk[0].get('user_prompt', '')
@@ -33,7 +48,7 @@ class QuestionGenerator:
 
             # 重複チェック
             if primary_key in existing_keys:
-                st.error(f"プライマリーキーの重複エラーが発生しました。talk_nums: {talk_nums_str}, task_name: {task_name}, word: {word}")
+                print(f"プライマリーキーの重複エラーが発生しました。talk_nums: {talk_nums_str}, task_name: {task_name}, word: {word}")
                 continue
             else:
                 existing_keys.add(primary_key)
@@ -57,16 +72,42 @@ class QuestionGenerator:
             self.total_tokens += total_token_count
             self.total_processing_time += total_processing_time
 
-            results.append({
+            result_entry = {
                 'talk_nums': talk_nums_str,
                 'task_name': task_name,
                 'word': word,
-                'query': question.strip(),
+                'question': question.strip(),
                 'answer': answer.strip(),
                 'token_count': total_token_count,
                 'processing_time': total_processing_time
-            })
+            }
+            results.append(result_entry)
+
+            # データベースに保存
+            try:
+                self.save_generated_qa(result_entry, chunk[0])
+            except DataAlreadyExistsError as e:
+                raise e
+
         return results
+
+    def save_generated_qa(self, result_entry, reference_entry):
+        # task_id と word_info_id を取得
+        task_id = reference_entry['task_id']
+        word_info_id = reference_entry['word_info_id']
+
+        db_entry = {
+            'task_name': result_entry['task_name'],  # task_name を追加
+            'task_id': task_id,
+            'word_info_id': word_info_id,
+            'talk_nums': result_entry['talk_nums'],
+            'question': result_entry['question'],
+            'answer': result_entry['answer'],
+            'token_count': result_entry['token_count'],
+            'processing_time': result_entry['processing_time']
+        }
+
+        self.db.insert_generated_qa(db_entry)
 
     def generate_question_via_function_calling(self, conversation_messages, user_prompt):
         try:
@@ -125,7 +166,7 @@ class QuestionGenerator:
 
             function_response = response["choices"][0]["message"].get("function_call")
             if not function_response:
-                st.error("Function Callingのレスポンスが得られませんでした。")
+                print("Function Callingのレスポンスが得られませんでした。")
                 return "", 0, 0
 
             arguments = json.loads(function_response.get("arguments", "{}"))
@@ -137,7 +178,7 @@ class QuestionGenerator:
             return question, token_count, processing_time
 
         except Exception as e:
-            st.error(f"質問生成中にエラーが発生しました: {e}")
+            print(f"質問生成中にエラーが発生しました: {e}")
             return "", 0, 0
 
     def generate_answer(self, conversation_messages, question, character_prompt):
@@ -145,18 +186,18 @@ class QuestionGenerator:
             start_time = time.time()
             # システムプロンプト
             system_prompt = f"""
-    あなたは以下のキャラクター設定に基づいて、質問に回答する専門家です。
+あなたは以下のキャラクター設定に基づいて、質問に回答する専門家です。
 
-    キャラクター設定:
-    {character_prompt}
+キャラクター設定:
+{character_prompt}
 
-    以下の指示に従って、質問に対する回答を生成してください。
+以下の指示に従って、質問に対する回答を生成してください。
 
-    - 回答は必ず上記のキャラクター設定の口調で作成してください。
-    - 回答は、会話履歴の内容に基づいて、質問の全ての部分にしっかりと答えてください。
-    - 会話履歴を参照し、正確かつ詳細な情報を提供してください。
-    - キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
-    """
+- 回答は必ず上記のキャラクター設定の口調で作成してください。
+- 回答は、会話履歴の内容に基づいて、質問の全ての部分にしっかりと答えてください。
+- 会話履歴を参照し、正確かつ詳細な情報を提供してください。
+- キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
+"""
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
@@ -181,7 +222,7 @@ class QuestionGenerator:
             return answer, token_count, processing_time
 
         except Exception as e:
-            st.error(f"回答生成中にエラーが発生しました: {e}")
+            print(f"回答生成中にエラーが発生しました: {e}")
             print(f"エラー詳細: {e}")
             return "", 0, 0
 
@@ -193,29 +234,32 @@ class QuestionGenerator:
             messages.append({"role": "assistant", "content": entry['assistant']})
         return messages
 
-    def parse_json_data(self, json_data):
-        # JSONデータから会話履歴を読み込み、チャンクに分ける
+    def get_conversation_chunks(self, task_name):
+        # データベースから指定された task_name の会話履歴を取得し、チャンクに分ける
         all_chunks = []
         try:
-            conversations = json_data.get('conversations', [])
-            character_prompt = json_data.get('character_prompt', '')
-            user_prompt = json_data.get('user_prompt', '')
-            task_name = json_data.get('task_name', '')
+            # データベースのメソッドを呼び出してデータを取得
+            conversations = self.db.get_conversation_chunks_by_task_name(task_name)
 
-            # talk_num, task_name, word ごとにグループ化
+            if not conversations:
+                print(f"タスク名 '{task_name}' に対応する会話が見つかりませんでした。")
+                return []
+
+            # word ごとにグループ化
             from itertools import groupby
+            conversations = sorted(conversations, key=lambda x: (x['word'], int(x['talk_num'])))
 
-            # conversations を task_name, word, talk_num でソート
-            conversations = sorted(conversations, key=lambda x: (x['task_name'], x['word'], int(x['talk_num'])))
-
-            # groupby でグループ化
-            for (task_name_key, word_key), group in groupby(conversations, key=lambda x: (x['task_name'], x['word'])):
+            for word_key, group in groupby(conversations, key=lambda x: x['word']):
                 chunk = list(group)
-                # 各エントリにキャラクタープロンプトとユーザープロンプトを追加
-                for entry in chunk:
-                    entry['character_prompt'] = character_prompt
-                    entry['user_prompt'] = user_prompt
                 all_chunks.append(chunk)
         except Exception as e:
-            st.error(f"JSONデータの解析中にエラーが発生しました: {e}")
+            print(f"会話のチャンク化中にエラーが発生しました: {e}")
         return all_chunks
+
+    def generate_json_for_download(self, task_name):
+        # 新しいテーブルからデータを取得して、JSON を生成
+        qas_list = self.db.get_generated_qas_by_task_name(task_name)
+        return qas_list
+
+    def close(self):
+        self.db.close()

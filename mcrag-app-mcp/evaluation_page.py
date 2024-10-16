@@ -23,34 +23,23 @@ def show_evaluation_page():
     # Temperatureのスライダー
     temperature = st.sidebar.slider("Temperatureを選択してください:", min_value=0.0, max_value=1.0, value=0.5, step=0.1)
 
-    # JSONファイルのアップロード
-    uploaded_file = st.file_uploader("質問と回答のJSONファイルをアップロードしてください:", type="json")
+    # タスク名の入力
+    task_name = st.text_input("タスク名を入力してください:")
 
     # 評価ボタン
     if st.button("回答を評価"):
         if not api_key or api_key == "your_api_key":
             st.error("有効なOpenAI APIキーを入力してください。")
-        elif not uploaded_file:
-            st.error("JSONファイルをアップロードしてください。")
+        elif not task_name:
+            st.error("タスク名を入力してください。")
         else:
             try:
                 with st.spinner("回答を評価しています..."):
-                    # JSONファイルの内容を読み込む
-                    try:
-                        json_data = json.load(uploaded_file)
-                        if not isinstance(json_data, list):
-                            st.error("アップロードされたJSONファイルはリスト形式である必要があります。")
-                            return
-                        st.success("JSONファイルが正常に読み込まれました。")
-                    except Exception as e:
-                        st.error(f"JSONファイルの読み込み中にエラーが発生しました: {e}")
-                        return
-
                     # リクエストボディの作成
                     payload = {
                         "temperature": temperature,
                         "api_key": api_key,
-                        "json_data": json_data
+                        "task_name": task_name
                     }
 
                     # バックエンドAPIのエンドポイント（ローカルホスト）
@@ -75,19 +64,20 @@ def show_evaluation_page():
                             st.write(f"**Expected Answer**: {result['expected_answer']}")
                             st.write(f"**GPT Response**: {result['gpt_response']}")
                             st.write(f"**Is Correct**: {result['is_correct']}")
+                            st.write(f"**Evaluation Detail**: {result['evaluation_detail']}")
                             st.write(f"**Token Count**: {result['token_count']}")
                             st.write(f"**Processing Time**: {result['processing_time']:.2f} seconds")
                             st.write("---")
 
                         # DataFrameの作成
-                        df = pd.DataFrame(results, columns=["talk_nums", "task_name", "word", "query", "expected_answer", "gpt_response", "is_correct", "token_count", "processing_time"])
+                        df = pd.DataFrame(results, columns=["talk_nums", "task_name", "word", "query", "expected_answer", "gpt_response", "is_correct", "evaluation_detail", "token_count", "processing_time"])
 
                         # CSVのダウンロード
                         csv = df.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="評価結果をCSVでダウンロード",
                             data=csv,
-                            file_name=f"evaluation_results.csv",
+                            file_name=f"evaluation_results_{task_name}.csv",
                             mime='text/csv',
                         )
                     else:
