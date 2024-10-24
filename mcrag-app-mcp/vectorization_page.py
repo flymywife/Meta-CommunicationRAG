@@ -1,22 +1,10 @@
 # vectorization_page.py
 
 import streamlit as st
-import os
-from dotenv import load_dotenv
 import requests
 
-def show_vectorization_page():
-    # 環境変数のロード
-    load_dotenv()
-    default_api_key = os.getenv("OPENAI_API_KEY", "your_api_key")
-
+def show_vectorization_page(api_key):
     st.title("ベクトル化")
-
-    # サイドバーの設定
-    st.sidebar.title("設定")
-
-    # OpenAI APIキーの入力欄
-    api_key = st.sidebar.text_input("OpenAI APIキーを入力してください:", value=default_api_key)
 
     # タスク名の入力
     task_name = st.text_input("タスク名を入力してください:")

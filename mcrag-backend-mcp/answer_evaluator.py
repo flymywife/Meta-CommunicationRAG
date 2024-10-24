@@ -2,13 +2,13 @@
 
 import time
 import json
+import logging
 from call_gpt import GPTClient  # GPTClientクラスをインポート
-from rag_models.model_kmeans import KMeansModel  # RAGモデルをインポート
-from database import ConversationDatabase  # データベースクラスをインポート
-
-class DataNotFoundError(Exception):
-    """データが見つからない場合の例外クラス"""
-    pass
+from rag_models.model_kmeans import KMeansModel  # KMeansModelをインポート
+from rag_models.model_vector import VectorSearchModel  # VectorSearchModelをインポート
+from rag_models.model_hybrid import HybridSearchModel  # HybridSearchModelをインポート
+from rag_models.model_kmeans_hybrid import KMeansHybridModel  # KMeansHybridModelをインポート
+from database import ConversationDatabase, DataAlreadyExistsError, DataNotFoundError  # データベースクラスをインポート
 
 class AnswerEvaluator:
     def __init__(self, api_key, temperature=0.7, db_file='conversation_data.db'):
@@ -21,7 +21,12 @@ class AnswerEvaluator:
         self.gpt_client = GPTClient(api_key=self.api_key)
 
         # RAGモデルのインスタンスを作成
-        self.rag_model = KMeansModel(api_key=self.api_key)
+        self.rag_models = {
+            'クラスタリング': KMeansModel(api_key=self.api_key),
+            'ベクトル検索': VectorSearchModel(api_key=self.api_key),
+            'ハイブリッド検索': HybridSearchModel(api_key=self.api_key),
+            'クラスタリングハイブリッド検索': KMeansHybridModel(api_key=self.api_key)
+        }
 
         # データベースのインスタンスを作成
         self.db = ConversationDatabase(db_file=db_file)
@@ -35,46 +40,71 @@ class AnswerEvaluator:
 
         results = []
 
-        for idx, entry in enumerate(data_list):
-            talk_nums = entry.get('talk_nums', '')
-            task_name = entry.get('task_name', '')
-            word = entry.get('word', '')
-            query = entry.get('query', '')
-            expected_answer = entry.get('answer', '')
+        for model_name, rag_model in self.rag_models.items():
+            print(f"\nモデル '{model_name}' の評価を開始します。\n")
+            # 評価結果の重複チェック（モデルごとにチェック）
+            if self.db.has_evaluated_answers(task_name, model_name):
+                print(f"タスク名 '{task_name}' の評価結果は既に存在します。モデル: {model_name}")
+                continue  # 既に評価済みの場合は次のモデルへ
 
-            print(f"クエリを処理中 ({idx+1}/{len(data_list)}): {query}")
+            for idx, entry in enumerate(data_list):
+                talk_nums = entry.get('talk_nums', '')
+                word = entry.get('word', '')
+                query = entry.get('query', '')
+                expected_answer = entry.get('answer', '')
+                task_id = entry.get('task_id')
+                word_info_id = entry.get('word_info_id')
+                print(f"クエリを処理中 ({idx+1}/{len(data_list)}): {query}")
 
-            # RAGモデルからコンテキストを取得
-            context = self.rag_model.retrieve_context(query)
+                # RAGモデルからコンテキストを取得
+                context = rag_model.retrieve_context(query, task_name)
+                print(f"取得したコンテキスト:{context}")
 
-            # GPTにクエリとコンテキストを渡して回答を生成
-            response_text, token_count, processing_time = self.generate_response(query, context)
+                # GPTにクエリとコンテキストを渡して回答を生成
+                response_text, token_count, processing_time = self.generate_response(query, context)
 
-            # 回答の比較
-            is_correct, evaluation_detail = self.compare_answers(query, expected_answer, response_text)
+                # 回答の比較
+                is_correct, evaluation_detail = self.compare_answers(query, expected_answer, response_text)
 
-            # 結果の保存
-            self.total_tokens += token_count
-            self.total_processing_time += processing_time
+                # 結果の保存
+                self.total_tokens += token_count
+                self.total_processing_time += processing_time
 
-            results.append({
-                'talk_nums': talk_nums,
-                'task_name': task_name,
-                'word': word,
-                'query': query,
-                'expected_answer': expected_answer,
-                'gpt_response': response_text,
-                'is_correct': int(is_correct),  # 1 または 0
-                'evaluation_detail': evaluation_detail,  # 評価の詳細
-                'token_count': token_count,
-                'processing_time': processing_time
-            })
+                result_entry = {
+                    'talk_nums': talk_nums,
+                    'task_name': task_name,
+                    'task_id': task_id,
+                    'word_info_id': word_info_id,
+                    'word': word,
+                    'query': query,
+                    'expected_answer': expected_answer,
+                    'gpt_response': response_text,
+                    'is_correct': int(is_correct),
+                    'evaluation_detail': evaluation_detail,
+                    'token_count': token_count,
+                    'processing_time': processing_time,
+                    'model': model_name  # モデル名を追加
+                }
+                results.append(result_entry)
+
+                # 評価結果をデータベースに保存
+                self.save_evaluated_answer(result_entry)
+
         return results
+
+    def save_evaluated_answer(self, result_entry):
+        try:
+            self.db.insert_evaluated_answer(result_entry)
+        except DataAlreadyExistsError as e:
+            raise e
+        except Exception as e:
+            logging.error(f"評価結果の保存中にエラーが発生しました: {e}")
+            raise e
 
     def get_qas_from_db(self, task_name):
         # データベースから質問と回答を取得
         try:
-            qas_list = self.db.get_generated_qas_by_task_name(task_name)
+            qas_list = self.db.get_generated_qas_with_ids_by_task_name(task_name)
             return qas_list
         except Exception as e:
             print(f"データベースからのデータ取得中にエラーが発生しました: {e}")
@@ -85,7 +115,7 @@ class AnswerEvaluator:
             start_time = time.time()
 
             # コンテキストとクエリをプロンプトに組み合わせる
-            prompt = f"以下は関連する会話の記録です。\n{context}\n\n質問: {query}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を提供してください。"
+            prompt = f"以下は関連する会話の記録です。\n{context}\n\n質問: {query}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
@@ -182,5 +212,3 @@ class AnswerEvaluator:
 
     def close(self):
         self.db.close()
-
-# このモジュールはバックエンドからインポートして使用します

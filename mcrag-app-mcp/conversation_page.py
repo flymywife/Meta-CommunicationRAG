@@ -1,24 +1,11 @@
 # conversation_page.py
-
 import streamlit as st
-import os
-from dotenv import load_dotenv
 import pandas as pd
 import requests
 import json
 
-def show_conversation_page():
-    # 環境変数のロード
-    load_dotenv()
-    default_api_key = os.getenv("OPENAI_API_KEY", "your_api_key")
-
+def show_conversation_page(api_key, temperature):
     st.title("会話生成")
-
-    # サイドバーの設定
-    st.sidebar.title("設定")
-
-    # OpenAI APIキーの入力欄
-    api_key = st.sidebar.text_input("OpenAI APIキーを入力してください:", value=default_api_key)
 
     # タスク名の入力
     task_name = st.text_input("タスク名を入力してください:")
@@ -112,9 +99,6 @@ def show_conversation_page():
     # ユーザー設定のプロンプト入力
     user_prompt = st.text_area("ユーザー設定のプロンプトを入力してください:", height=150)
 
-    # Temperatureのスライダー
-    temperature = st.slider("Temperatureを選択してください:", min_value=0.0, max_value=2.0, value=0.7, step=0.1)
-
     # 会話生成ボタン
     if st.button("会話生成"):
         if not task_name:
@@ -165,14 +149,14 @@ def show_conversation_page():
                         # 合計のトークン数と処理時間を表示
                         st.write(f"**Total Token Count**: {total_tokens}")
                         st.write(f"**Total Processing Time**: {total_processing_time:.2f} seconds")
-                        
+
                         # JSONデータの作成
                         json_data = json.dumps({
                             "task_name": task_name,
                             "character_prompt": character_prompt,
                             "user_prompt": user_prompt,
                             "conversations": conversations
-                        }, ensure_ascii=False, indent=2).encode('utf-8')                        
+                        }, ensure_ascii=False, indent=2).encode('utf-8')
                         # JSONのダウンロード
                         st.download_button(
                             label="JSONをダウンロード",

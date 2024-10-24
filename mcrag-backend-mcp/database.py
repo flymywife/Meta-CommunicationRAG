@@ -7,8 +7,13 @@ from datetime import datetime
 # ログの基本設定
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s [%(levelname)s] %(message)s')
 
+# 例外クラスの定義
 class DataAlreadyExistsError(Exception):
     """データが既に存在する場合の例外クラス"""
+    pass
+
+class DataNotFoundError(Exception):
+    """データが見つからない場合の例外クラス"""
     pass
 
 class ConversationDatabase:
@@ -74,6 +79,28 @@ class ConversationDatabase:
             FOREIGN KEY (word_info_id) REFERENCES words_info (word_info_id),
             UNIQUE (task_name, word_info_id, talk_nums)  -- 修正後の UNIQUE 制約
 )
+        ''')
+        # evaluated_answers テーブルの作成
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS evaluated_answers (
+            eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            task_id INTEGER NOT NULL,
+            word_info_id INTEGER NOT NULL,
+            talk_nums TEXT NOT NULL,
+            query TEXT,
+            expected_answer TEXT,
+            gpt_response TEXT,
+            is_correct INTEGER,
+            evaluation_detail TEXT,
+            token_count INTEGER,
+            processing_time REAL,
+            model TEXT NOT NULL,
+            created_at TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id),
+            FOREIGN KEY (word_info_id) REFERENCES words_info (word_info_id),
+            UNIQUE (task_name, word_info_id, talk_nums, model)  -- UNIQUE制約にmodelを追加
+        )
         ''')
         self.conn.commit()
 
@@ -247,6 +274,7 @@ class ConversationDatabase:
         except Exception as e:
             logging.error(f"データベースからのデータ取得中にエラーが発生しました: {e}")
             return []
+        
 
     def get_generated_qas_by_task_name(self, task_name):
         select_sql = '''
@@ -315,6 +343,93 @@ class ConversationDatabase:
         result = self.cursor.fetchone()
         return result[0] > 0
     
+    
+    def has_evaluated_answers(self, task_name: str) -> bool:
+        """
+        指定された task_name に対して、evaluated_answers テーブルに既に評価結果が存在するかを確認します。
+        """
+        select_sql = 'SELECT COUNT(*) FROM evaluated_answers WHERE task_name = ?'
+        self.cursor.execute(select_sql, (task_name,))
+        result = self.cursor.fetchone()
+        return result[0] > 0
+    
+
+    def insert_evaluated_answer(self, result_entry):
+        insert_sql = '''
+        INSERT INTO evaluated_answers (
+            task_name, task_id, word_info_id, talk_nums, query,
+            expected_answer, gpt_response, is_correct, evaluation_detail,
+            token_count, processing_time, created_at, model  -- modelを追加
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        '''
+        data = (
+            result_entry['task_name'],
+            result_entry['task_id'],
+            result_entry['word_info_id'],
+            result_entry['talk_nums'],
+            result_entry['query'],
+            result_entry['expected_answer'],
+            result_entry['gpt_response'],
+            result_entry['is_correct'],
+            result_entry['evaluation_detail'],
+            result_entry['token_count'],
+            result_entry['processing_time'],
+            result_entry.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+            result_entry['model']  # モデル名を追加
+        )
+        try:
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+        except sqlite3.IntegrityError as e:
+            raise DataAlreadyExistsError(f"評価結果は既に存在します。詳細: {e}")
+        except Exception as e:
+            logging.error(f"評価結果の保存中にエラーが発生しました: {e}")
+            raise e
+        
+    def get_generated_qas_with_ids_by_task_name(self, task_name):
+        select_sql = '''
+        SELECT
+            gqa.talk_nums,
+            gqa.task_name,
+            wi.word,
+            gqa.question,
+            gqa.answer,
+            gqa.token_count,
+            gqa.processing_time,
+            gqa.task_id,
+            gqa.word_info_id
+        FROM generated_qas gqa
+        INNER JOIN words_info wi ON gqa.word_info_id = wi.word_info_id
+        WHERE gqa.task_name = ?
+        '''
+        try:
+            self.cursor.execute(select_sql, (task_name,))
+            rows = self.cursor.fetchall()
+            qas_list = []
+            for row in rows:
+                qas_list.append({
+                    'talk_nums': row[0],
+                    'task_name': row[1],
+                    'word': row[2],
+                    'query': row[3],
+                    'answer': row[4],
+                    'token_count': row[5],
+                    'processing_time': row[6],
+                    'task_id': row[7],
+                    'word_info_id': row[8]
+                })
+            return qas_list
+        except Exception as e:
+            logging.error(f"データベースからのデータ取得中にエラーが発生しました: {e}")
+            return []
+        
+    def has_evaluated_answers(self, task_name, model_name):
+        select_sql = '''
+        SELECT COUNT(*) FROM evaluated_answers WHERE task_name = ? AND model = ?;
+        '''
+        self.cursor.execute(select_sql, (task_name, model_name))
+        result = self.cursor.fetchone()
+        return result[0] > 0
 
     def close(self):
         self.conn.close()
