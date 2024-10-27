@@ -51,18 +51,16 @@ def show_evaluation_page(api_key, temperature):
                             st.write(f"**Evaluation Detail**: {result['evaluation_detail']}")
                             st.write(f"**Token Count**: {result['token_count']}")
                             st.write(f"**Processing Time**: {result['processing_time']:.2f} seconds")
+                            st.write(f"**Model**: {result.get('model', '')}")  # モデル名を追加
                             st.write("---")
 
-                        # DataFrameの作成
-                        df = pd.DataFrame(results, columns=["talk_nums", "task_name", "word", "query", "expected_answer", "gpt_response", "is_correct", "evaluation_detail", "token_count", "processing_time"])
-
-                        # CSVのダウンロード
-                        csv = df.to_csv(index=False).encode('utf-8')
+                        # JSONデータの作成
+                        json_data = json.dumps(results, ensure_ascii=False, indent=2).encode('utf-8')
                         st.download_button(
-                            label="評価結果をCSVでダウンロード",
-                            data=csv,
-                            file_name=f"evaluation_results_{task_name}.csv",
-                            mime='text/csv',
+                            label="評価結果をJSONでダウンロード",
+                            data=json_data,
+                            file_name=f"evaluation_results_{task_name}.json",
+                            mime='application/json',
                         )
                     else:
                         # エラーメッセージを表示

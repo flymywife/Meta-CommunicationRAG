@@ -1,10 +1,13 @@
+# workflow_execution_page.py
+
 import streamlit as st
 import pandas as pd
 import requests
 import json
+import os
 
-def show_conversation_page(api_key, temperature):
-    st.title("会話生成")
+def show_workflow_execution_page(api_key, temperature):
+    st.title("ワークフロー実行")
 
     # タスク名の入力
     task_name = st.text_input("タスク名を入力してください:")
@@ -18,7 +21,7 @@ def show_conversation_page(api_key, temperature):
     words_info = []
 
     if input_method == 'フォームで入力':
-        key_prefix = 'form'
+        key_prefix = 'workflow_form'
         # デフォルトのワード数
         num_words = st.number_input("ワードの数を選択してください:", min_value=1, max_value=max_words, value=1, step=1)
 
@@ -37,7 +40,7 @@ def show_conversation_page(api_key, temperature):
                     words_info.append({'word': word, 'infos': infos})
 
     elif input_method == 'CSVファイルをアップロード':
-        key_prefix = 'csv'
+        key_prefix = 'workflow_csv'
         # CSVファイルのアップロード
         uploaded_file = st.file_uploader("ワードと情報が記載されたCSVファイルをアップロードしてください（ヘッダー行が必要です）:", type="csv")
         if uploaded_file is not None:
@@ -93,12 +96,12 @@ def show_conversation_page(api_key, temperature):
             words_info = updated_words_info
 
     # キャラクターのプロンプトの入力方法の選択
-    character_prompt_input_method = st.radio("キャラクターのプロンプトの入力方法を選択してください:", ('フォームで入力', 'テキストファイルをアップロード'), key='character_prompt_method')
+    character_prompt_input_method = st.radio("キャラクターのプロンプトの入力方法を選択してください:", ('フォームで入力', 'テキストファイルをアップロード'), key='workflow_character_prompt_method')
 
     if character_prompt_input_method == 'フォームで入力':
         character_prompt = st.text_area("キャラクターのプロンプトを入力してください:", height=150)
     else:
-        character_prompt_file = st.file_uploader("キャラクターのプロンプトが記載されたテキストファイルをアップロードしてください:", type="txt", key='character_prompt_file')
+        character_prompt_file = st.file_uploader("キャラクターのプロンプトが記載されたテキストファイルをアップロードしてください:", type="txt", key='workflow_character_prompt_file')
         if character_prompt_file is not None:
             character_prompt = character_prompt_file.read().decode('utf-8')
         else:
@@ -106,20 +109,20 @@ def show_conversation_page(api_key, temperature):
         character_prompt = st.text_area("キャラクターのプロンプトを編集してください:", value=character_prompt, height=150)
 
     # ユーザー設定のプロンプトの入力方法の選択
-    user_prompt_input_method = st.radio("ユーザー設定のプロンプトの入力方法を選択してください:", ('フォームで入力', 'テキストファイルをアップロード'), key='user_prompt_method')
+    user_prompt_input_method = st.radio("ユーザー設定のプロンプトの入力方法を選択してください:", ('フォームで入力', 'テキストファイルをアップロード'), key='workflow_user_prompt_method')
 
     if user_prompt_input_method == 'フォームで入力':
         user_prompt = st.text_area("ユーザー設定のプロンプトを入力してください:", height=150)
     else:
-        user_prompt_file = st.file_uploader("ユーザー設定のプロンプトが記載されたテキストファイルをアップロードしてください:", type="txt", key='user_prompt_file')
+        user_prompt_file = st.file_uploader("ユーザー設定のプロンプトが記載されたテキストファイルをアップロードしてください:", type="txt", key='workflow_user_prompt_file')
         if user_prompt_file is not None:
             user_prompt = user_prompt_file.read().decode('utf-8')
         else:
             user_prompt = ''
         user_prompt = st.text_area("ユーザー設定のプロンプトを編集してください:", value=user_prompt, height=150)
 
-    # 会話生成ボタン
-    if st.button("会話生成"):
+    # ワークフロー実行ボタン
+    if st.button("ワークフローを実行"):
         if not task_name:
             st.error("タスク名を入力してください。")
         elif not api_key or api_key == "your_api_key":
@@ -131,11 +134,19 @@ def show_conversation_page(api_key, temperature):
         elif not words_info:
             st.error("少なくとも1つのワードと情報を入力してください。")
         else:
-            # バックエンドAPIにリクエストを送信
+            # ワークフローの実行
             try:
-                with st.spinner("会話を生成しています..."):
-                    # リクエストボディの作成
-                    payload = {
+                with st.spinner("ワークフローを実行しています..."):
+                    # 進捗状況を表示するためのプレースホルダー
+                    progress_text = st.empty()
+                    progress_bar = st.progress(0)
+
+                    total_steps = 4
+                    current_step = 0
+
+                    # 1. 会話生成
+                    progress_text.text("会話を生成しています...")
+                    conversation_payload = {
                         "temperature": temperature,
                         "api_key": api_key,
                         "task_name": task_name,
@@ -143,47 +154,86 @@ def show_conversation_page(api_key, temperature):
                         "character_prompt": character_prompt,
                         "user_prompt": user_prompt
                     }
+                    conversation_url = "http://localhost:8000/generate_conversation"
+                    conversation_response = requests.post(conversation_url, json=conversation_payload)
 
-                    # バックエンドAPIのエンドポイント（ローカルホスト）
-                    url = "http://localhost:8000/generate_conversation"
+                    if conversation_response.status_code != 200:
+                        st.error(f"会話生成中にエラーが発生しました: {conversation_response.text}")
+                        return
 
-                    # APIリクエストの送信
-                    response = requests.post(url, json=payload)
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        conversations = data["conversations"]
-                        total_tokens = data["total_tokens"]
-                        total_processing_time = data["total_processing_time"]
-                        # 結果を表示
-                        for turn in conversations:
-                            st.write(f"**Talk {turn['talk_num']}**")
-                            st.write(f"**Word**: {turn['word']}")
-                            st.write(f"**Info**: {turn['info']}")
-                            st.write(f"**User**: {turn['user']}")
-                            st.write(f"**Assistant**: {turn['assistant']}")
-                            st.write(f"**Token Count**: {turn['token_count']}")
-                            st.write(f"**Processing Time**: {float(turn['processing_time']):.2f} seconds")
-                            st.write("---")
-                        # 合計のトークン数と処理時間を表示
-                        st.write(f"**Total Token Count**: {total_tokens}")
-                        st.write(f"**Total Processing Time**: {total_processing_time:.2f} seconds")
+                    # 2. 質問と回答の生成
+                    progress_text.text("質問と回答を生成しています...")
+                    qa_payload = {
+                        "temperature": temperature,
+                        "api_key": api_key,
+                        "task_name": task_name
+                    }
+                    qa_url = "http://localhost:8000/generate_questions" 
+                    qa_response = requests.post(qa_url, json=qa_payload)
 
-                        # JSONデータの作成
-                        json_data = json.dumps({
-                            "task_name": task_name,
-                            "character_prompt": character_prompt,
-                            "user_prompt": user_prompt,
-                            "conversations": conversations
-                        }, ensure_ascii=False, indent=2).encode('utf-8')
-                        # JSONのダウンロード
-                        st.download_button(
-                            label="JSONをダウンロード",
-                            data=json_data,
-                            file_name=f"{task_name}_conversation.json",
-                            mime='application/json',
-                            )
-                    else:
-                        st.error(f"エラーが発生しました: {response.text}")
+                    if qa_response.status_code != 200:
+                        st.error(f"質問と回答の生成中にエラーが発生しました: {qa_response.text}")
+                        return
+
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+
+                    # 3. ベクトル化
+                    progress_text.text("ベクトル化しています...")
+                    vector_payload = {
+                        "api_key": api_key,
+                        "task_name": task_name
+                    }
+                    vector_url = "http://localhost:8000/vectorize_conversations" 
+                    vector_response = requests.post(vector_url, json=vector_payload)
+
+                    if vector_response.status_code != 200:
+                        st.error(f"ベクトル化中にエラーが発生しました: {vector_response.text}")
+                        return
+
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+
+                    # 4. 回答の評価
+                    progress_text.text("回答を評価しています...")
+                    evaluation_payload = {
+                        "temperature": temperature,
+                        "api_key": api_key,
+                        "task_name": task_name
+                    }
+                    evaluation_url = "http://localhost:8000/evaluate_answers"
+                    evaluation_response = requests.post(evaluation_url, json=evaluation_payload)
+
+                    if evaluation_response.status_code != 200:
+                        st.error(f"回答の評価中にエラーが発生しました: {evaluation_response.text}")
+                        return
+
+                    current_step += 1
+                    progress_bar.progress(current_step / total_steps)
+
+                    # ワークフロー完了
+                    progress_text.text("ワークフローが完了しました。")
+                    st.success("すべてのステップが正常に完了しました。")
+
+                    # 必要に応じて結果を表示
+                    # ここでは、評価結果を表示します
+                    evaluation_data = evaluation_response.json()
+                    results = evaluation_data.get("results", [])
+                    st.subheader("評価結果")
+                    for result in results:
+                        st.write(f"**Talk Nums**: {result['talk_nums']}")
+                        st.write(f"**Task Name**: {result['task_name']}")
+                        st.write(f"**Word**: {result['word']}")
+                        st.write(f"**Query**: {result['query']}")
+                        st.write(f"**Expected Answer**: {result['expected_answer']}")
+                        st.write(f"**GPT Response**: {result['gpt_response']}")
+                        st.write(f"**Is Correct**: {result['is_correct']}")
+                        st.write(f"**Evaluation Detail**: {result['evaluation_detail']}")
+                        st.write(f"**Model**: {result.get('model', '')}")
+                        st.write("---")
+
             except Exception as e:
                 st.error(f"エラーが発生しました: {e}")

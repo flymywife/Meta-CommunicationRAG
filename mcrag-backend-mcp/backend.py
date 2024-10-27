@@ -8,6 +8,8 @@ from typing import List, Dict, Any
 from fastapi.responses import JSONResponse
 from vector_db import vectorize_and_store
 from database import DataAlreadyExistsError  # 追加
+from analysis import Analysis  # analysis.py をインポート
+
 import logging
 
 
@@ -173,4 +175,16 @@ async def vectorize_conversations(request: Request):
         raise he
     except Exception as e:
         logging.error(f"Error in /vectorize_conversations: {str(e)}")
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
+    
+
+@app.get("/get_task_names")
+async def get_task_names():
+    try:
+        analysis = Analysis()
+        task_names = analysis.get_all_task_names()
+        analysis.close()
+
+        return JSONResponse(content={"task_names": task_names}, status_code=200)
+    except Exception as e:
         return JSONResponse(content={"detail": str(e)}, status_code=500)

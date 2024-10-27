@@ -1,11 +1,26 @@
-#home.py
+# home.py
 
 import streamlit as st
+import os
 
 def show_home():
     st.title("Meta-Communication Retrieval-Augmented Generation(MCRAG)")
-    st.header("キャラクター会話自動生成とRAG評価ツールMCRAG　説明書")
-    st.write("ここにアプリケーションの説明書を記載します。現在、説明書は準備中です。")
+    st.header("サンプルとマニュアルのダウンロード")
+    st.write("サンプルとマニュアルのzipです。MCRAGの機能と使い方と、インプットデータのフォーマットとサンプルが置いています。")
 
-    st.header("サンプルダウンロード")
-    st.write("ここにサンプルのダウンロードリンクを設置します。現在、サンプルは準備中です。")
+    # サンプルファイルのパスを設定
+    sample_file_path = os.path.join("sample", "mcrag_sample.zip")
+
+    # サンプルファイルが存在するか確認
+    if os.path.exists(sample_file_path):
+        # ファイルをバイナリモードで読み込む
+        with open(sample_file_path, "rb") as file:
+            file_bytes = file.read()
+            st.download_button(
+                label="サンプルとマニュアルダウンロード",
+                data=file_bytes,
+                file_name="mcrag_sample.zip",
+                mime="application/zip"
+            )
+    else:
+        st.error("サンプルファイルが見つかりません。ファイルの場所を確認してください。")

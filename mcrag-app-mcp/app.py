@@ -6,7 +6,7 @@ from question_page import show_question_page
 from evaluation_page import show_evaluation_page
 from vectorization_page import show_vectorization_page
 from analysis_page import show_analysis_page
-
+from workflow_execution_page import show_workflow_execution_page
 import os
 from dotenv import load_dotenv
 
@@ -27,7 +27,7 @@ temperature = st.sidebar.slider("Temperatureを選択してください:", min_v
 
 # サイドバーのメニュー
 st.sidebar.title("メニュー")
-page = st.sidebar.radio("ページを選択してください:", ('ホーム', '会話生成', '質問と回答の生成', "回答の評価", "ベクトル化", "分析"))
+page = st.sidebar.radio("ページを選択してください:", ('ホーム', '会話生成', '質問と回答の生成', "回答の評価", "ベクトル化", "ワークフロー実行","分析"))
 
 # ページの表示
 if page == 'ホーム':
@@ -40,5 +40,7 @@ elif page == "回答の評価":
     show_evaluation_page(api_key, temperature)
 elif page == "ベクトル化":
     show_vectorization_page(api_key)
+elif page == "ワークフロー実行":
+    show_workflow_execution_page(api_key, temperature)
 elif page == "分析":
     show_analysis_page()
