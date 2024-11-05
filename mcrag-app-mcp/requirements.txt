@@ -3,5 +3,4 @@ tiktoken==0.4.0
 openai==0.27.8
 numpy==1.24.3
 python-dotenv
-sqlite-vss==0.1.2
 watchdog==5.0.3

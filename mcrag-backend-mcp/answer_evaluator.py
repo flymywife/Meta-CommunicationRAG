@@ -4,10 +4,9 @@ import time
 import json
 import logging
 from call_gpt import GPTClient  # GPTClientクラスをインポート
-from rag_models.model_kmeans import KMeansModel  # KMeansModelをインポート
+from rag_models.model_vector_rerank import VectorSearchRerankModel  # VectorSearchRerankModelをインポート
 from rag_models.model_vector import VectorSearchModel  # VectorSearchModelをインポート
-from rag_models.model_hybrid import HybridSearchModel  # HybridSearchModelをインポート
-from rag_models.model_kmeans_hybrid import KMeansHybridModel  # KMeansHybridModelをインポート
+from rag_models.model_faiss_rag import FAISSRAGModel  # VectorSearchModelをインポート
 from database import ConversationDatabase, DataAlreadyExistsError, DataNotFoundError  # データベースクラスをインポート
 
 class AnswerEvaluator:
@@ -22,10 +21,8 @@ class AnswerEvaluator:
 
         # RAGモデルのインスタンスを作成
         self.rag_models = {
-            'クラスタリング': KMeansModel(api_key=self.api_key),
             'ベクトル検索': VectorSearchModel(api_key=self.api_key),
-            'ハイブリッド検索': HybridSearchModel(api_key=self.api_key),
-            'クラスタリングハイブリッド検索': KMeansHybridModel(api_key=self.api_key)
+            'FAISS検索': FAISSRAGModel(api_key=self.api_key)
         }
 
         # データベースのインスタンスを作成
@@ -57,14 +54,16 @@ class AnswerEvaluator:
                 print(f"クエリを処理中 ({idx+1}/{len(data_list)}): {query}")
 
                 # RAGモデルからコンテキストを取得
-                context = rag_model.retrieve_context(query, task_name)
-                print(f"取得したコンテキスト:{context}")
+                context_result = rag_model.retrieve_context(query, task_name)
+                print(f"取得したコンテキスト: {context_result}")
+
+                # コンテキストの内容を取得
+                get_context_1 = context_result.get('get_context_1', '')
+                get_context_2 = context_result.get('get_context_2', '')
+                get_talk_nums = context_result.get('get_talk_nums', '')
 
                 # GPTにクエリとコンテキストを渡して回答を生成
-                response_text, token_count, processing_time = self.generate_response(query, context)
-
-                # 回答の比較
-                is_correct, evaluation_detail = self.compare_answers(query, expected_answer, response_text)
+                response_text, token_count, processing_time = self.generate_response(query, get_context_1, get_context_2)
 
                 # 結果の保存
                 self.total_tokens += token_count
@@ -79,8 +78,9 @@ class AnswerEvaluator:
                     'query': query,
                     'expected_answer': expected_answer,
                     'gpt_response': response_text,
-                    'is_correct': int(is_correct),
-                    'evaluation_detail': evaluation_detail,
+                    'get_context_1': get_context_1,
+                    'get_context_2': get_context_2,
+                    'get_talk_nums': get_talk_nums,
                     'token_count': token_count,
                     'processing_time': processing_time,
                     'model': model_name  # モデル名を追加
@@ -96,7 +96,7 @@ class AnswerEvaluator:
         try:
             self.db.insert_evaluated_answer(result_entry)
         except DataAlreadyExistsError as e:
-            raise e
+            print(f"評価結果は既に存在します。詳細: {e}")
         except Exception as e:
             logging.error(f"評価結果の保存中にエラーが発生しました: {e}")
             raise e
@@ -110,12 +110,13 @@ class AnswerEvaluator:
             print(f"データベースからのデータ取得中にエラーが発生しました: {e}")
             return []
 
-    def generate_response(self, query, context):
+    def generate_response(self, query, context_1, context_2):
         try:
             start_time = time.time()
 
             # コンテキストとクエリをプロンプトに組み合わせる
-            prompt = f"以下は関連する会話の記録です。\n{context}\n\n質問: {query}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
+            context_text = f"{context_1}\n\n{context_2}".strip()
+            prompt = f"以下は関連する会話の記録です。\n{context_text}\n\n質問: {query}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
@@ -139,76 +140,6 @@ class AnswerEvaluator:
         except Exception as e:
             print(f"回答生成中にエラーが発生しました: {e}")
             return "", 0, 0
-
-    def compare_answers(self, query, expected_answer, actual_answer):
-        try:
-            # 評価用のプロンプトを作成
-            evaluation_prompt = f"""
-あなたは厳密な教師です。以下の質問に対する学生の回答が、模範解答と比べて正しいかどうかを判断してください。
-
-質問:
-{query}
-
-模範解答:
-{expected_answer}
-
-学生の回答:
-{actual_answer}
-
-学生の回答が質問に適切に答えているかどうか、模範解答と比較して判断してください。正しい場合は1、正しくない場合は0を返してください。また、理由を簡潔に述べてください。
-"""
-
-            # Function Calling の定義
-            functions = [
-                {
-                    "name": "evaluate_answer",
-                    "description": "学生の回答が質問に適切に答えているかを評価します。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "is_correct": {
-                                "type": "integer",
-                                "description": "1（正しい）または 0（正しくない）"
-                            },
-                            "evaluation_detail": {
-                                "type": "string",
-                                "description": "評価の理由を簡潔に述べてください。"
-                            }
-                        },
-                        "required": ["is_correct", "evaluation_detail"],
-                    }
-                }
-            ]
-
-            # GPTに評価を依頼
-            response = self.gpt_client.call_gpt_function(
-                messages=[
-                    {"role": "user", "content": evaluation_prompt},
-                ],
-                functions=functions,
-                function_call={"name": "evaluate_answer"},
-                max_tokens=150,
-                temperature=0.0,  # 評価なので温度は低めに
-            )
-
-            if not response:
-                return 0, "評価に失敗しました。"
-
-            # Function Call の結果を解析
-            function_call = response['choices'][0]['message'].get('function_call')
-            if function_call and function_call['name'] == 'evaluate_answer':
-                arguments = json.loads(function_call['arguments'])
-                is_correct = arguments.get('is_correct', 0)
-                evaluation_detail = arguments.get('evaluation_detail', '評価の詳細がありません。')
-            else:
-                is_correct = 0
-                evaluation_detail = "Function calling に失敗しました。"
-
-            return is_correct, evaluation_detail  # 評価結果と理由を返す
-
-        except Exception as e:
-            print(f"評価中にエラーが発生しました: {e}")
-            return 0, f"評価中にエラーが発生しました: {e}"
 
     def close(self):
         self.db.close()

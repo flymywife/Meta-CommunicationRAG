@@ -1,4 +1,5 @@
 # evaluation_page.py
+
 import streamlit as st
 import pandas as pd
 import requests
@@ -35,23 +36,24 @@ def show_evaluation_page(api_key, temperature):
                     if response.status_code == 200:
                         data = response.json()
                         results = data["results"]
-                        total_tokens = data["total_tokens"]
-                        total_processing_time = data["total_processing_time"]
+                        total_tokens = data.get("total_tokens", 0)
+                        total_processing_time = data.get("total_processing_time", 0)
 
                         # 結果の表示
                         st.subheader("評価結果")
                         for result in results:
-                            st.write(f"**Talk Nums**: {result['talk_nums']}")
-                            st.write(f"**Task Name**: {result['task_name']}")
-                            st.write(f"**Word**: {result['word']}")
-                            st.write(f"**Query**: {result['query']}")
-                            st.write(f"**Expected Answer**: {result['expected_answer']}")
-                            st.write(f"**GPT Response**: {result['gpt_response']}")
-                            st.write(f"**Is Correct**: {result['is_correct']}")
-                            st.write(f"**Evaluation Detail**: {result['evaluation_detail']}")
-                            st.write(f"**Token Count**: {result['token_count']}")
-                            st.write(f"**Processing Time**: {result['processing_time']:.2f} seconds")
-                            st.write(f"**Model**: {result.get('model', '')}")  # モデル名を追加
+                            st.write(f"**Talk Nums**: {result.get('talk_nums', '')}")
+                            st.write(f"**Task Name**: {result.get('task_name', '')}")
+                            st.write(f"**Word**: {result.get('word', '')}")
+                            st.write(f"**Query**: {result.get('query', '')}")
+                            st.write(f"**Expected Answer**: {result.get('expected_answer', '')}")
+                            st.write(f"**GPT Response**: {result.get('gpt_response', '')}")
+                            st.write(f"**Get Context 1**: {result.get('get_context_1', '')}")
+                            st.write(f"**Get Context 2**: {result.get('get_context_2', '')}")
+                            st.write(f"**Get Talk Nums**: {result.get('get_talk_nums', '')}")
+                            st.write(f"**Token Count**: {result.get('token_count', 0)}")
+                            st.write(f"**Processing Time**: {result.get('processing_time', 0):.2f} seconds")
+                            st.write(f"**Model**: {result.get('model', '')}")
                             st.write("---")
 
                         # JSONデータの作成

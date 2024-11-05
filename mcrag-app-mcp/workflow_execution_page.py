@@ -8,6 +8,7 @@ import os
 
 def show_workflow_execution_page(api_key, temperature):
     st.title("ワークフロー実行")
+    st.write("会話生成→質問と回答の生成→ベクトル化→回答の評価までの一連のワークフローを実行します")
 
     # タスク名の入力
     task_name = st.text_input("タスク名を入力してください:")
@@ -224,14 +225,17 @@ def show_workflow_execution_page(api_key, temperature):
                     results = evaluation_data.get("results", [])
                     st.subheader("評価結果")
                     for result in results:
-                        st.write(f"**Talk Nums**: {result['talk_nums']}")
-                        st.write(f"**Task Name**: {result['task_name']}")
-                        st.write(f"**Word**: {result['word']}")
-                        st.write(f"**Query**: {result['query']}")
-                        st.write(f"**Expected Answer**: {result['expected_answer']}")
-                        st.write(f"**GPT Response**: {result['gpt_response']}")
-                        st.write(f"**Is Correct**: {result['is_correct']}")
-                        st.write(f"**Evaluation Detail**: {result['evaluation_detail']}")
+                        st.write(f"**Talk Nums**: {result.get('talk_nums', '')}")
+                        st.write(f"**Task Name**: {result.get('task_name', '')}")
+                        st.write(f"**Word**: {result.get('word', '')}")
+                        st.write(f"**Query**: {result.get('query', '')}")
+                        st.write(f"**Expected Answer**: {result.get('expected_answer', '')}")
+                        st.write(f"**GPT Response**: {result.get('gpt_response', '')}")
+                        st.write(f"**Get Context 1**: {result.get('get_context_1', '')}")
+                        st.write(f"**Get Context 2**: {result.get('get_context_2', '')}")
+                        st.write(f"**Get Talk Nums**: {result.get('get_talk_nums', '')}")
+                        st.write(f"**Token Count**: {result.get('token_count', 0)}")
+                        st.write(f"**Processing Time**: {result.get('processing_time', 0):.2f} seconds")
                         st.write(f"**Model**: {result.get('model', '')}")
                         st.write("---")
 

@@ -27,7 +27,7 @@ class QuestionGenerator:
         if self.db.has_generated_qas(task_name):
             raise DataAlreadyExistsError(f"タスク名 '{task_name}' の質問と回答は既に生成されています。")
 
-        # データベースから会話履歴を取得
+        # データベースから会話履歴の組み合わせを取得
         conversation_chunks = self.get_conversation_chunks(task_name)
 
         if not conversation_chunks:
@@ -37,6 +37,7 @@ class QuestionGenerator:
         existing_keys = set()  # 重複チェック用のセット
 
         for chunk in conversation_chunks:
+            # talk_nums を取得（カンマ区切り）
             talk_nums = [str(entry['talk_num']) for entry in chunk]
             talk_nums_str = ','.join(talk_nums)
             word = chunk[0].get('word', '')
@@ -56,12 +57,12 @@ class QuestionGenerator:
             # 会話履歴をメッセージ形式で取得
             conversation_messages = self.get_conversation_messages(chunk)
 
-            # 質問の生成（Function Calling を使用）
+            # 質問の生成
             question, token_count_q, processing_time_q = self.generate_question_via_function_calling(
                 conversation_messages, user_prompt
             )
 
-            # 回答の生成（Function Calling を使用せず、プロンプトエンジニアリングを使用）
+            # 回答の生成
             answer, token_count_a, processing_time_a = self.generate_answer(
                 conversation_messages, question, character_prompt
             )
@@ -91,6 +92,7 @@ class QuestionGenerator:
 
         return results
 
+
     def save_generated_qa(self, result_entry, reference_entry):
         # task_id と word_info_id を取得
         task_id = reference_entry['task_id']
@@ -114,22 +116,24 @@ class QuestionGenerator:
             start_time = time.time()
             # システムプロンプト
             system_prompt = f"""
-あなたは以下のキャラクター設定に基づいて、与えられた会話内容に関する質問を作成する専門家です。
+    あなたは以下のキャラクター設定に基づいて、与えられた会話内容に関する質問を作成する専門家です。
 
-キャラクター設定:
-{user_prompt}
+    キャラクター設定:
+    {user_prompt}
 
-以下の指示に従って、会話内容に関する質問を一つ生成してください。
+    以下の指示に従って、会話内容に関する質問を一つ生成してください。
 
-- 質問は必ず上記のキャラクター設定の口調で作成してください。
-- 質問は、会話の全体的な内容や複数の話題を関連付けたものにしてください。
-- 質問に答えるためには、会話の全体を参照する必要があるようにしてください。
-- 単純な yes/no で答えられる質問は避け、より深い思考や分析を要する質問を心がけてください。
-- 可能であれば、会話で触れられた複数のトピックを結びつけるような質問を作成してください。
-- 質問は具体的で明確であり、曖昧さを避けてください。
-- 質問の難易度は中級から上級レベルにし、会話の内容を十分に理解していないと答えられないようにしてください。
-- キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
-"""
+    - 質問は必ず上記のキャラクター設定の口調で作成してください。
+    - 質問は、以下の条件を満たすようにしてください。
+    - 会話履歴1と会話履歴2の両方の情報を必要とする質問にすること。
+    - 会話履歴1のみ、または会話履歴2のみでは答えられない質問にすること。
+    - 質問に答えるためには、提供された2つの会話履歴を参照する必要があるようにしてください。
+    - 単純な yes/no で答えられる質問は避け、より深い思考や分析を要する質問を心がけてください。
+    - 可能であれば、2つの会話で触れられた複数のトピックを結びつけるような質問を作成してください。
+    - 質問は具体的で明確であり、曖昧さを避けてください。
+    - 質問の難易度は中級から上級レベルにし、会話の内容を十分に理解していないと答えられないようにしてください。
+    - キャラクターの設定による口調を反映させ、自然な会話の流れを維持してください。
+    """
             # Function Callingの定義
             functions = [
                 {
@@ -153,7 +157,7 @@ class QuestionGenerator:
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *conversation_messages,
-                    {"role": "user", "content": "上記の会話内容に関する質問を一つ作成してください。"}
+                    {"role": "user", "content": "上記の2つの会話内容に関する質問を一つ作成してください。"}
                 ],
                 functions=functions,
                 function_call={"name": "generate_question"},
@@ -180,24 +184,24 @@ class QuestionGenerator:
         except Exception as e:
             print(f"質問生成中にエラーが発生しました: {e}")
             return "", 0, 0
-
+        
     def generate_answer(self, conversation_messages, question, character_prompt):
         try:
             start_time = time.time()
             # システムプロンプト
             system_prompt = f"""
-あなたは以下のキャラクター設定に基づいて、質問に回答する専門家です。
+    あなたは以下のキャラクター設定に基づいて、質問に回答する専門家です。
 
-キャラクター設定:
-{character_prompt}
+    キャラクター設定:
+    {character_prompt}
 
-以下の指示に従って、質問に対する回答を生成してください。
+    以下の指示に従って、質問に対する回答を生成してください。
 
-- 回答は必ず上記のキャラクター設定の口調で作成してください。
-- 回答は、会話履歴の内容に基づいて、質問の全ての部分にしっかりと答えてください。
-- 会話履歴を参照し、正確かつ詳細な情報を提供してください。
-- キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
-"""
+    - 回答は必ず上記のキャラクター設定の口調で作成してください。
+    - 回答は、提供された2つの会話履歴の内容に基づいて、質問の全ての部分にしっかりと答えてください。
+    - 2つの会話履歴を参照し、正確かつ詳細な情報を提供してください。
+    - キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
+    """
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
@@ -226,6 +230,7 @@ class QuestionGenerator:
             print(f"エラー詳細: {e}")
             return "", 0, 0
 
+
     def get_conversation_messages(self, chunk):
         # 会話履歴をメッセージ形式に変換
         messages = []
@@ -235,7 +240,7 @@ class QuestionGenerator:
         return messages
 
     def get_conversation_chunks(self, task_name):
-        # データベースから指定された task_name の会話履歴を取得し、チャンクに分ける
+        # データベースから指定された task_name の会話履歴を取得
         all_chunks = []
         try:
             # データベースのメソッドを呼び出してデータを取得
@@ -250,8 +255,23 @@ class QuestionGenerator:
             conversations = sorted(conversations, key=lambda x: (x['word'], int(x['talk_num'])))
 
             for word_key, group in groupby(conversations, key=lambda x: x['word']):
-                chunk = list(group)
-                all_chunks.append(chunk)
+                # 会話履歴をリストに変換
+                conversation_list = list(group)
+                # 会話履歴の数を取得
+                num_conversations = len(conversation_list)
+                # 最初の会話履歴（会話履歴1）を取得
+                first_conversation = [conversation_list[0]]
+                # 他の会話履歴を取得
+                other_conversations = conversation_list[1:]
+
+                # 会話履歴が2つ未満の場合はスキップ
+                if num_conversations < 2:
+                    continue
+
+                # 組み合わせを作成
+                for other_conv in other_conversations:
+                    chunk = first_conversation + [other_conv]
+                    all_chunks.append(chunk)
         except Exception as e:
             print(f"会話のチャンク化中にエラーが発生しました: {e}")
         return all_chunks

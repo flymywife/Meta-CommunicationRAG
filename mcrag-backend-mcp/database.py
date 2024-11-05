@@ -91,15 +91,68 @@ class ConversationDatabase:
             query TEXT,
             expected_answer TEXT,
             gpt_response TEXT,
-            is_correct INTEGER,
-            evaluation_detail TEXT,
+            get_context_1 TEXT,
+            get_context_2 TEXT,
+            get_talk_nums TEXT,
             token_count INTEGER,
             processing_time REAL,
             model TEXT NOT NULL,
             created_at TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id),
             FOREIGN KEY (word_info_id) REFERENCES words_info (word_info_id),
-            UNIQUE (task_name, word_info_id, talk_nums, model)  -- UNIQUE制約にmodelを追加
+            UNIQUE (task_name, word_info_id, talk_nums, model)
+        )
+        ''')
+        # vector_table テーブルの作成
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vector_table (
+            vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            word_info_id INTEGER NOT NULL,
+            talk_num TEXT NOT NULL,
+            content TEXT,
+            row_vector BLOB,
+            vector BLOB,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id)
+        )
+        ''')
+        # rag_results テーブルの作成
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS rag_results (
+            rag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_name TEXT NOT NULL,
+            task_id INTEGER NOT NULL,
+            vector_id INTEGER NOT NULL,
+            talk_num_1 TEXT NOT NULL,
+            talk_num_2 TEXT NOT NULL,
+            talk_num_3 TEXT NOT NULL,
+            talk_num_4 TEXT NOT NULL,
+            talk_num_5 TEXT NOT NULL,
+            cosine_similarity_1 REAL NOT NULL,
+            cosine_similarity_2 REAL NOT NULL,
+            cosine_similarity_3 REAL NOT NULL,
+            cosine_similarity_4 REAL NOT NULL,
+            cosine_similarity_5 REAL NOT NULL,
+            BM25_score_1 REAL,
+            BM25_score_2 REAL,
+            BM25_score_3 REAL,
+            BM25_score_4 REAL,
+            BM25_score_5 REAL,
+            rss_rank_1 REAL,
+            rss_rank_2 REAL,
+            rss_rank_3 REAL,
+            rss_rank_4 REAL,
+            rss_rank_5 REAL,
+            rerank_score_1 REAL,
+            rerank_score_2 REAL,
+            rerank_score_3 REAL,
+            rerank_score_4 REAL,
+            rerank_score_5 REAL,
+            processing_time REAL,
+            model TEXT NOT NULL,
+            created_at TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id),
+            FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
         )
         ''')
         self.conn.commit()
@@ -358,9 +411,9 @@ class ConversationDatabase:
         insert_sql = '''
         INSERT INTO evaluated_answers (
             task_name, task_id, word_info_id, talk_nums, query,
-            expected_answer, gpt_response, is_correct, evaluation_detail,
-            token_count, processing_time, created_at, model  -- modelを追加
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            expected_answer, gpt_response, get_context_1, get_context_2, get_talk_nums,
+            token_count, processing_time, model, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         '''
         data = (
             result_entry['task_name'],
@@ -370,12 +423,13 @@ class ConversationDatabase:
             result_entry['query'],
             result_entry['expected_answer'],
             result_entry['gpt_response'],
-            result_entry['is_correct'],
-            result_entry['evaluation_detail'],
+            result_entry['get_context_1'],
+            result_entry['get_context_2'],
+            result_entry['get_talk_nums'],
             result_entry['token_count'],
             result_entry['processing_time'],
-            result_entry.get('created_at', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-            result_entry['model']  # モデル名を追加
+            result_entry['model'],
+            result_entry.get('created_at', self.get_current_timestamp())
         )
         try:
             self.cursor.execute(insert_sql, data)
@@ -430,6 +484,92 @@ class ConversationDatabase:
         self.cursor.execute(select_sql, (task_name, model_name))
         result = self.cursor.fetchone()
         return result[0] > 0
+    
+
+    def insert_rag_result(self, result_entry):
+        """
+        RAGモデルの結果を rag_results テーブルに挿入します。
+        """
+        insert_sql = '''
+        INSERT INTO rag_results (
+            task_name, task_id, eval_id,
+            talk_num_1, talk_num_2, talk_num_3, talk_num_4, talk_num_5,
+            cosine_similarity_1, cosine_similarity_2, cosine_similarity_3, cosine_similarity_4, cosine_similarity_5,
+            BM25_score_1, BM25_score_2, BM25_score_3, BM25_score_4, BM25_score_5,
+            rss_rank_1, rss_rank_2, rss_rank_3, rss_rank_4, rss_rank_5,
+            rerank_score_1, rerank_score_2, rerank_score_3, rerank_score_4, rerank_score_5,
+            processing_time, model, created_at
+        ) VALUES (?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?, ?,
+                  ?, ?, ?)
+        '''
+        data = (
+            result_entry['task_name'],
+            result_entry['task_id'],
+            result_entry['eval_id'],
+            result_entry.get('talk_num_1', ''),
+            result_entry.get('talk_num_2', ''),
+            result_entry.get('talk_num_3', ''),
+            result_entry.get('talk_num_4', ''),
+            result_entry.get('talk_num_5', ''),
+            result_entry.get('cosine_similarity_1', 0.0),
+            result_entry.get('cosine_similarity_2', 0.0),
+            result_entry.get('cosine_similarity_3', 0.0),
+            result_entry.get('cosine_similarity_4', 0.0),
+            result_entry.get('cosine_similarity_5', 0.0),
+            result_entry.get('BM25_score_1', None),
+            result_entry.get('BM25_score_2', None),
+            result_entry.get('BM25_score_3', None),
+            result_entry.get('BM25_score_4', None),
+            result_entry.get('BM25_score_5', None),
+            result_entry.get('rss_rank_1', None),
+            result_entry.get('rss_rank_2', None),
+            result_entry.get('rss_rank_3', None),
+            result_entry.get('rss_rank_4', None),
+            result_entry.get('rss_rank_5', None),
+            result_entry.get('rerank_score_1', None),
+            result_entry.get('rerank_score_2', None),
+            result_entry.get('rerank_score_3', None),
+            result_entry.get('rerank_score_4', None),
+            result_entry.get('rerank_score_5', None),
+            result_entry.get('processing_time', None),
+            result_entry.get('model', ''),
+            result_entry.get('created_at', self.get_current_timestamp())
+        )
+        try:
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+        except sqlite3.IntegrityError as e:
+            logging.error(f"rag_results テーブルへの挿入中にエラーが発生しました: {e}")
+            raise DataAlreadyExistsError(f"RAG結果は既に存在します。詳細: {e}")
+        except Exception as e:
+            logging.error(f"rag_results テーブルへの挿入中にエラーが発生しました: {e}")
+            raise e
+
+    def get_rag_results_by_task_name(self, task_name):
+        """
+        指定されたタスク名に関連する RAG結果を取得します。
+        """
+        select_sql = '''
+        SELECT * FROM rag_results WHERE task_name = ? ORDER BY rag_id;
+        '''
+        try:
+            self.cursor.execute(select_sql, (task_name,))
+            rows = self.cursor.fetchall()
+            # カラム名を取得
+            column_names = [description[0] for description in self.cursor.description]
+            results = []
+            for row in rows:
+                result_entry = dict(zip(column_names, row))
+                results.append(result_entry)
+            return results
+        except Exception as e:
+            logging.error(f"rag_results テーブルからのデータ取得中にエラーが発生しました: {e}")
+            return []
 
     def close(self):
         self.conn.close()

@@ -91,7 +91,7 @@ class HybridSearchModel(BaseRAGModel):
         """
         response = openai.Embedding.create(
             input=query,
-            model="text-embedding-ada-002"
+            model="text-embedding-3-large"
         )
         query_vector = np.array(response['data'][0]['embedding'], dtype=np.float32)
         return query_vector

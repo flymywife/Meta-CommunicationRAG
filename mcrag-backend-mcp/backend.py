@@ -161,9 +161,22 @@ async def vectorize_conversations(request: Request):
         task_name = data["task_name"]
 
         # vector_db.py の関数を呼び出す
-        added_count = vectorize_and_store(api_key=api_key, task_name=task_name)
+        result = vectorize_and_store(api_key=api_key, task_name=task_name)
+        
+        # エラー処理の追加
+        if isinstance(result, dict) and result.get("status") == "error":
+            logging.error(f"Vectorization error: {result.get('message')}")
+            return JSONResponse(
+                content={"detail": result.get("message")},
+                status_code=400
+            )
 
-        # 結果の返却
+        # 成功時のレスポンス
+        if isinstance(result, dict) and "count" in result:
+            added_count = result["count"]
+        else:
+            added_count = result  # 後方互換性のため
+
         response_data = {
             "message": f"Successfully vectorized and stored {added_count} conversations."
         }
@@ -171,13 +184,15 @@ async def vectorize_conversations(request: Request):
         return JSONResponse(content=response_data, status_code=200)
 
     except HTTPException as he:
-        # 既に定義されたHTTPExceptionをそのまま返す
         raise he
     except Exception as e:
         logging.error(f"Error in /vectorize_conversations: {str(e)}")
-        return JSONResponse(content={"detail": str(e)}, status_code=500)
-    
-
+        # エラーメッセージをより詳細に
+        error_message = f"ベクトル化処理中にエラーが発生しました: {str(e)}"
+        return JSONResponse(
+            content={"detail": error_message},
+            status_code=500
+        )
 @app.get("/get_task_names")
 async def get_task_names():
     try:
