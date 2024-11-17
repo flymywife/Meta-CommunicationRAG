@@ -200,6 +200,7 @@ def show_workflow_execution_page(api_key, temperature):
 
                     # 4. 回答の評価
                     progress_text.text("回答を評価しています...")
+                    print(f"タスク名：{task_name}")
                     evaluation_payload = {
                         "temperature": temperature,
                         "api_key": api_key,
@@ -228,11 +229,10 @@ def show_workflow_execution_page(api_key, temperature):
                         st.write(f"**Talk Nums**: {result.get('talk_nums', '')}")
                         st.write(f"**Task Name**: {result.get('task_name', '')}")
                         st.write(f"**Word**: {result.get('word', '')}")
-                        st.write(f"**Query**: {result.get('query', '')}")
+                        st.write(f"**Query**: {result.get('question', '')}")
                         st.write(f"**Expected Answer**: {result.get('expected_answer', '')}")
                         st.write(f"**GPT Response**: {result.get('gpt_response', '')}")
-                        st.write(f"**Get Context 1**: {result.get('get_context_1', '')}")
-                        st.write(f"**Get Context 2**: {result.get('get_context_2', '')}")
+                        st.write(f"**Get Context 1**: {result.get('get_context', '')}")
                         st.write(f"**Get Talk Nums**: {result.get('get_talk_nums', '')}")
                         st.write(f"**Token Count**: {result.get('token_count', 0)}")
                         st.write(f"**Processing Time**: {result.get('processing_time', 0):.2f} seconds")

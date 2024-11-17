@@ -6,27 +6,19 @@ import numpy as np
 import faiss
 import os
 from database import ConversationDatabase
-from sklearn.decomposition import PCA
 from typing import Any, Dict, Tuple, List
-import pickle
 import constants as c
 
 class VectorDatabase:
-    def __init__(self, api_key, db_file='conversation_data.db', index_folder='faiss_index', 
-                 index_file='faiss_index.index', pca_model_file='pca_model.pkl', 
-                 max_components=768, min_components=5):
+    def __init__(self, api_key, db_file='conversation_data.db', index_folder='faiss_index',
+                 index_file='faiss_index.index'):
         self.api_key = api_key
         openai.api_key = self.api_key
         self.db_file = db_file
-        
-        # PCAの設定を動的に
-        self.max_components = max_components
-        self.min_components = min_components
-        
+
         # インデックスフォルダのパスを設定
         self.index_folder = index_folder
         self.index_file = index_file  # インデックスファイル名
-        self.pca_model_file = os.path.join(self.index_folder, pca_model_file)  # PCAモデルのファイルパス
 
         # インデックスフォルダが存在しない場合は作成
         if not os.path.exists(self.index_folder):
@@ -40,11 +32,7 @@ class VectorDatabase:
         self.cursor = self.conn.cursor()
         self.create_vector_table()
         self.index = None  # FAISS インデックス
-        self.ids = []      # ベクトルの ID リスト
 
-        # PCAモデルの初期化
-        self.pca = None
-        self.load_pca_model()
         self.load_faiss_index()
 
     def create_vector_table(self):
@@ -56,7 +44,6 @@ class VectorDatabase:
             word_info_id INTEGER NOT NULL,
             talk_num TEXT NOT NULL,
             content TEXT,
-            row_vector BLOB,
             vector BLOB,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id)
         )
@@ -65,7 +52,7 @@ class VectorDatabase:
 
     def compute_query_embedding(self, query: str) -> np.ndarray:
         """
-        クエリをベクトル化し、PCA を適用して正規化します。
+        クエリをベクトル化し、正規化します。
         """
         # クエリをベクトル化
         response = openai.Embedding.create(
@@ -73,12 +60,6 @@ class VectorDatabase:
             model=c.EMBEDDING_MODEL
         )
         query_vector = np.array(response['data'][0]['embedding'], dtype='float32')
-
-        # PCA の適用
-        if self.pca is not None:
-            query_vector = self.pca.transform(query_vector.reshape(1, -1))[0]
-        else:
-            print("PCA モデルがロードされていません。")
 
         # ベクトルの正規化
         norm = np.linalg.norm(query_vector)
@@ -98,17 +79,7 @@ class VectorDatabase:
         # ゼロノルム対策
         if norm_v1 == 0 or norm_v2 == 0:
             return 0.0
-        return np.dot(v1, v2) / (norm_v1 * norm_v2)
-
-    def load_pca_model(self):
-        # PCA モデルのロード
-        if os.path.exists(self.pca_model_file):
-            with open(self.pca_model_file, 'rb') as f:
-                self.pca = pickle.load(f)
-            print(f"PCA モデルを '{self.pca_model_file}' から読み込みました。")
-        else:
-            print(f"PCA モデルファイル '{self.pca_model_file}' が存在しません。")
-            self.pca = None
+        return float(np.dot(v1, v2) / (norm_v1 * norm_v2))
 
     def load_faiss_index(self):
         if os.path.exists(self.index_file_path):
@@ -135,6 +106,9 @@ class VectorDatabase:
         faiss.write_index(index, self.index_file_path)
         print(f"FAISS インデックスを '{self.index_file_path}' に保存しました。")
 
+        # インデックスをメモリ上に保持
+        self.index = index
+
     def vectorize_conversations(self, task_name):
         # ConversationDatabase を使用して会話データを取得
         convo_db = ConversationDatabase(db_file=self.db_file)
@@ -144,8 +118,8 @@ class VectorDatabase:
         if not conversations:
             raise ValueError(f"タスク名 '{task_name}' に一致する会話が見つかりません。")
 
-        row_vectors = []
-        vector_ids = []
+        vectors = []
+        ids = []
         data_to_insert = []
 
         # 会話データを task_id, word_info_id, talk_num で一意に絞り込む
@@ -172,14 +146,21 @@ class VectorDatabase:
             content = "\n".join(content_parts)
 
             try:
-                # 生のベクトルの取得
+                # ベクトルの取得
                 response = openai.Embedding.create(
                     input=content,
                     model=c.EMBEDDING_MODEL
                 )
-                row_vector = response['data'][0]['embedding']
-                row_vector_np = np.array(row_vector, dtype='float32')
-                row_vector_bytes = row_vector_np.tobytes()
+                vector = np.array(response['data'][0]['embedding'], dtype='float32')
+
+                # ベクトルの正規化
+                norm = np.linalg.norm(vector)
+                if norm != 0:
+                    vector = vector / norm
+                else:
+                    print(f"ベクトルのノルムが 0 です。content: {content}")
+
+                vector_bytes = vector.tobytes()
 
                 # データを一時的に保存
                 data_to_insert.append({
@@ -187,83 +168,48 @@ class VectorDatabase:
                     'word_info_id': word_info_id,
                     'talk_num': talk_num,
                     'content': content,
-                    'row_vector': row_vector_np,
-                    'row_vector_bytes': row_vector_bytes
+                    'vector': vector,
+                    'vector_bytes': vector_bytes
                 })
 
-                # row_vector をリストに追加（PCA の適用に使用）
-                row_vectors.append(row_vector_np)
+                # ベクトルと ID をリストに追加
+                vectors.append(vector)
+                # vector_id はまだ未定なので、後で取得
+                ids.append(None)
 
             except Exception as e:
                 print(f"ベクトル化中にエラーが発生しました (task_id: {task_id}, word_info_id: {word_info_id}, talk_num: {talk_num}): {e}")
                 continue
 
-        # PCA の適用
-        if row_vectors:
-            row_vectors_np = np.array(row_vectors)
-            n_samples = len(row_vectors)
-            
-            # 動的にn_componentsを決定
-            n_components = min(max(self.min_components, n_samples - 1), self.max_components)
-            
-            print(f"データ数: {n_samples}, 使用する次元数: {n_components}")
+        # データベースへのデータ挿入と FAISS インデックスへの追加
+        for idx, data in enumerate(data_to_insert):
+            try:
+                # データベースに挿入
+                insert_sql = '''
+                INSERT INTO vector_table (task_id, word_info_id, talk_num, content, vector)
+                VALUES (?, ?, ?, ?, ?)
+                '''
+                insert_data = (
+                    data['task_id'],
+                    data['word_info_id'],
+                    data['talk_num'],
+                    data['content'],
+                    data['vector_bytes']
+                )
+                self.cursor.execute(insert_sql, insert_data)
+                self.conn.commit()
 
-            # PCA モデルのロードまたはフィッティング
-            if self.pca is None:
-                self.pca = PCA(n_components=n_components)
-                self.pca.fit(row_vectors_np)
-                # PCA モデルを保存
-                with open(self.pca_model_file, 'wb') as f:
-                    pickle.dump(self.pca, f)
-                print(f"PCA モデルを '{self.pca_model_file}' に保存しました。")
+                # vector_id を取得して更新
+                vector_id = self.cursor.lastrowid
+                ids[idx] = vector_id
 
-            # PCA を適用してベクトルを取得
-            vector_np_all = self.pca.transform(row_vectors_np)
+            except Exception as e:
+                print(f"データベースへの挿入中にエラーが発生しました (task_id: {data['task_id']}, word_info_id: {data['word_info_id']}, talk_num: {data['talk_num']}): {e}")
+                continue
 
-            # ベクトルの正規化
-            norms = np.linalg.norm(vector_np_all, axis=1, keepdims=True)
-            vector_np_all = vector_np_all / norms
-
-            # データベースへのデータ挿入と FAISS インデックスへの追加
-            vectors = []
-            ids = []
-
-            for idx, data in enumerate(data_to_insert):
-                try:
-                    # PCA 適用後のベクトルを取得
-                    vector_np = vector_np_all[idx]
-                    vector_bytes = vector_np.tobytes()
-
-                    # データベースに挿入
-                    insert_sql = '''
-                    INSERT INTO vector_table (task_id, word_info_id, talk_num, content, row_vector, vector)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    '''
-                    insert_data = (
-                        data['task_id'],
-                        data['word_info_id'],
-                        data['talk_num'],
-                        data['content'],
-                        data['row_vector_bytes'],
-                        vector_bytes
-                    )
-                    self.cursor.execute(insert_sql, insert_data)
-                    self.conn.commit()
-
-                    # vector_id を取得
-                    vector_id = self.cursor.lastrowid
-
-                    # FAISS インデックスに追加
-                    vectors.append(vector_np)
-                    ids.append(vector_id)
-
-                except Exception as e:
-                    print(f"データベースへの挿入中にエラーが発生しました (task_id: {data['task_id']}, word_info_id: {data['word_info_id']}, talk_num: {data['talk_num']}): {e}")
-                    continue
-
-            # FAISS インデックスを作成してファイルに保存
-            if vectors:
-                self.create_faiss_index(np.array(vectors), ids)
+        # FAISS インデックスを作成してファイルに保存
+        if vectors and ids:
+            self.create_faiss_index(np.array(vectors), ids)
 
         return len(unique_conversations)
 
@@ -300,32 +246,26 @@ class VectorDatabase:
     def retrieve_similar_vectors(self, query_vector: np.ndarray, top_k: int = 5) -> List[Tuple[int, float]]:
         """
         クエリベクトルに類似したベクトルを FAISS インデックスから検索します。
-        常にtop_k件（または全件数の少ない方）の結果を返します。
         """
         if self.index is None:
             print("FAISS インデックスがロードされていません。")
             return []
 
-        # インデックス内の総ベクトル数を取得
-        total_vectors = self.index.ntotal
-        print(f"インデックス内のベクトル数: {total_vectors}")
-
-        # 実際に取得する件数を決定
-        actual_k = min(top_k, total_vectors)
-        
         # 検索の実行
-        distances, indices = self.index.search(query_vector.reshape(1, -1), actual_k)
+        distances, indices = self.index.search(query_vector.reshape(1, -1), top_k)
 
-        # すべての結果をログ出力
-        results = [(idx, dist) for dist, idx in zip(distances[0], indices[0])]
-        print(f"検索結果 - 件数: {len(results)}")
-        for idx, dist in results:
-            print(f"vector_id: {idx}, 類似度スコア: {dist}")
+        results = []
+        for dist, idx in zip(distances[0], indices[0]):
+            if idx == -1:
+                continue  # マッチがない場合
+            # numpy.float32 を float に変換
+            results.append((int(idx), float(dist)))
 
         return results
 
     def close(self):
         self.conn.close()
+
 
 def vectorize_and_store(api_key, task_name):
     vector_db = VectorDatabase(api_key=api_key)

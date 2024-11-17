@@ -53,6 +53,8 @@ class ConversationDatabase:
             talk_num TEXT NOT NULL,
             user TEXT,
             assistant TEXT,
+            before_user TEXT,
+            before_assistant TEXT,
             token_count TEXT,
             processing_time TEXT,
             temperature TEXT,
@@ -84,15 +86,15 @@ class ConversationDatabase:
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS evaluated_answers (
             eval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            qa_id INTEGER NOT NULL,
             task_name TEXT NOT NULL,
             task_id INTEGER NOT NULL,
             word_info_id INTEGER NOT NULL,
             talk_nums TEXT NOT NULL,
-            query TEXT,
+            question TEXT,
             expected_answer TEXT,
             gpt_response TEXT,
-            get_context_1 TEXT,
-            get_context_2 TEXT,
+            get_context TEXT,
             get_talk_nums TEXT,
             token_count INTEGER,
             processing_time REAL,
@@ -120,19 +122,19 @@ class ConversationDatabase:
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS rag_results (
             rag_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            qa_id INTEGER NOT NULL,
             task_name TEXT NOT NULL,
             task_id INTEGER NOT NULL,
-            vector_id INTEGER NOT NULL,
             talk_num_1 TEXT NOT NULL,
             talk_num_2 TEXT NOT NULL,
             talk_num_3 TEXT NOT NULL,
             talk_num_4 TEXT NOT NULL,
             talk_num_5 TEXT NOT NULL,
-            cosine_similarity_1 REAL NOT NULL,
-            cosine_similarity_2 REAL NOT NULL,
-            cosine_similarity_3 REAL NOT NULL,
-            cosine_similarity_4 REAL NOT NULL,
-            cosine_similarity_5 REAL NOT NULL,
+            cosine_similarity_1 REAL,
+            cosine_similarity_2 REAL,
+            cosine_similarity_3 REAL,
+            cosine_similarity_4 REAL,
+            cosine_similarity_5 REAL,
             BM25_score_1 REAL,
             BM25_score_2 REAL,
             BM25_score_3 REAL,
@@ -148,9 +150,9 @@ class ConversationDatabase:
             rerank_score_3 REAL,
             rerank_score_4 REAL,
             rerank_score_5 REAL,
-            processing_time REAL,
+            processing_time REAL NOT NULL,
             model TEXT NOT NULL,
-            created_at TEXT,
+            created_at TEXT NOT NULL,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id),
             FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
         )
@@ -216,8 +218,8 @@ class ConversationDatabase:
 
     def insert_conversation(self, entry):
         insert_sql = '''
-        INSERT INTO conversations (task_id, word_info_id, talk_num, user, assistant, token_count, processing_time, temperature, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO conversations (task_id, word_info_id, talk_num, user, assistant, before_user, before_assistant, token_count, processing_time, temperature, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         data = (
             entry['task_id'],
@@ -225,6 +227,8 @@ class ConversationDatabase:
             entry['talk_num'],
             entry['user'],
             entry['assistant'],
+            entry['before_user'],
+            entry['before_assistant'],
             entry['token_count'],
             entry['processing_time'],
             entry['temperature'],
@@ -300,7 +304,7 @@ class ConversationDatabase:
 
     def get_conversations_with_task_name(self, task_name):
         select_sql = '''
-        SELECT c.task_id, c.word_info_id, c.talk_num, c.user, c.assistant, t.task_name, wi.word, t.character_prompt, t.user_prompt
+        SELECT c.task_id, c.word_info_id, c.talk_num, c.user, c.assistant ,c.before_user, c.before_assistant, t.task_name, wi.word, t.character_prompt, t.user_prompt
         FROM conversations c
         INNER JOIN tasks t ON c.task_id = t.task_id
         INNER JOIN words_info wi ON c.word_info_id = wi.word_info_id
@@ -318,10 +322,12 @@ class ConversationDatabase:
                     'talk_num': row[2],
                     'user': row[3],
                     'assistant': row[4],
-                    'task_name': row[5],
-                    'word': row[6],
-                    'character_prompt': row[7],
-                    'user_prompt': row[8]
+                    'before_user': row[5],
+                    'before_assistant': row[6],
+                    'task_name': row[7],
+                    'word': row[8],
+                    'character_prompt': row[9],
+                    'user_prompt': row[10]
                 })
             return conversations
         except Exception as e:
@@ -345,7 +351,7 @@ class ConversationDatabase:
                     'talk_nums': row[0],
                     'task_name': row[1],
                     'word': row[2],
-                    'query': row[3],
+                    'question': row[3],
                     'answer': row[4],
                     'token_count': row[5],
                     'processing_time': row[6]
@@ -410,21 +416,21 @@ class ConversationDatabase:
     def insert_evaluated_answer(self, result_entry):
         insert_sql = '''
         INSERT INTO evaluated_answers (
-            task_name, task_id, word_info_id, talk_nums, query,
-            expected_answer, gpt_response, get_context_1, get_context_2, get_talk_nums,
+            qa_id, task_name, task_id, word_info_id, talk_nums, question,
+            expected_answer, gpt_response, get_context, get_talk_nums,
             token_count, processing_time, model, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         '''
         data = (
+            result_entry['qa_id'],
             result_entry['task_name'],
             result_entry['task_id'],
             result_entry['word_info_id'],
             result_entry['talk_nums'],
-            result_entry['query'],
+            result_entry['question'],
             result_entry['expected_answer'],
             result_entry['gpt_response'],
-            result_entry['get_context_1'],
-            result_entry['get_context_2'],
+            result_entry['get_context'],
             result_entry['get_talk_nums'],
             result_entry['token_count'],
             result_entry['processing_time'],
@@ -443,6 +449,7 @@ class ConversationDatabase:
     def get_generated_qas_with_ids_by_task_name(self, task_name):
         select_sql = '''
         SELECT
+            gqa.qa_id,
             gqa.talk_nums,
             gqa.task_name,
             wi.word,
@@ -462,15 +469,16 @@ class ConversationDatabase:
             qas_list = []
             for row in rows:
                 qas_list.append({
-                    'talk_nums': row[0],
-                    'task_name': row[1],
-                    'word': row[2],
-                    'query': row[3],
-                    'answer': row[4],
-                    'token_count': row[5],
-                    'processing_time': row[6],
-                    'task_id': row[7],
-                    'word_info_id': row[8]
+                    'qa_id': row[0],
+                    'talk_nums': row[1],
+                    'task_name': row[2],
+                    'word': row[3],
+                    'question': row[4],
+                    'answer': row[5],
+                    'token_count': row[6],
+                    'processing_time': row[7],
+                    'task_id': row[8],
+                    'word_info_id': row[9]
                 })
             return qas_list
         except Exception as e:
@@ -492,7 +500,7 @@ class ConversationDatabase:
         """
         insert_sql = '''
         INSERT INTO rag_results (
-            task_name, task_id, eval_id,
+            qa_id, task_name, task_id,
             talk_num_1, talk_num_2, talk_num_3, talk_num_4, talk_num_5,
             cosine_similarity_1, cosine_similarity_2, cosine_similarity_3, cosine_similarity_4, cosine_similarity_5,
             BM25_score_1, BM25_score_2, BM25_score_3, BM25_score_4, BM25_score_5,
@@ -500,17 +508,17 @@ class ConversationDatabase:
             rerank_score_1, rerank_score_2, rerank_score_3, rerank_score_4, rerank_score_5,
             processing_time, model, created_at
         ) VALUES (?, ?, ?,
-                  ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?,
-                  ?, ?, ?, ?, ?,
-                  ?, ?, ?)
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?)
         '''
         data = (
+            result_entry['qa_id'],
             result_entry['task_name'],
             result_entry['task_id'],
-            result_entry['eval_id'],
             result_entry.get('talk_num_1', ''),
             result_entry.get('talk_num_2', ''),
             result_entry.get('talk_num_3', ''),
@@ -549,6 +557,22 @@ class ConversationDatabase:
         except Exception as e:
             logging.error(f"rag_results テーブルへの挿入中にエラーが発生しました: {e}")
             raise e
+
+    def get_qa_id(self, task_name, word_info_id, talk_nums):
+        """
+        generated_qas テーブルから qa_id を取得します。
+        """
+        select_sql = '''
+        SELECT qa_id FROM generated_qas
+        WHERE task_name = ? AND word_info_id = ? AND talk_nums = ?
+        '''
+        try:
+            self.cursor.execute(select_sql, (task_name, word_info_id, talk_nums))
+            result = self.cursor.fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            logging.error(f"qa_id の取得中にエラーが発生しました: {e}")
+            return None
 
     def get_rag_results_by_task_name(self, task_name):
         """

@@ -45,41 +45,41 @@ class AnswerEvaluator:
                 continue  # 既に評価済みの場合は次のモデルへ
 
             for idx, entry in enumerate(data_list):
+                qa_id = entry.get('qa_id', '')
                 talk_nums = entry.get('talk_nums', '')
                 word = entry.get('word', '')
-                query = entry.get('query', '')
+                question = entry.get('question', '')
                 expected_answer = entry.get('answer', '')
                 task_id = entry.get('task_id')
                 word_info_id = entry.get('word_info_id')
-                print(f"クエリを処理中 ({idx+1}/{len(data_list)}): {query}")
+                print(f"クエリを処理中 ({idx+1}/{len(data_list)}): {question}")
 
                 # RAGモデルからコンテキストを取得
-                context_result = rag_model.retrieve_context(query, task_name)
+                context_result = rag_model.retrieve_context(question, task_name, qa_id)
                 print(f"取得したコンテキスト: {context_result}")
 
                 # コンテキストの内容を取得
-                get_context_1 = context_result.get('get_context_1', '')
-                get_context_2 = context_result.get('get_context_2', '')
+                get_context = context_result.get('get_context', '')
                 get_talk_nums = context_result.get('get_talk_nums', '')
 
                 # GPTにクエリとコンテキストを渡して回答を生成
-                response_text, token_count, processing_time = self.generate_response(query, get_context_1, get_context_2)
+                response_text, token_count, processing_time = self.generate_response(question, get_context)
 
                 # 結果の保存
                 self.total_tokens += token_count
                 self.total_processing_time += processing_time
 
                 result_entry = {
+                    'qa_id': qa_id,
                     'talk_nums': talk_nums,
                     'task_name': task_name,
                     'task_id': task_id,
                     'word_info_id': word_info_id,
                     'word': word,
-                    'query': query,
+                    'question': question,
                     'expected_answer': expected_answer,
                     'gpt_response': response_text,
-                    'get_context_1': get_context_1,
-                    'get_context_2': get_context_2,
+                    'get_context': get_context,
                     'get_talk_nums': get_talk_nums,
                     'token_count': token_count,
                     'processing_time': processing_time,
@@ -110,20 +110,19 @@ class AnswerEvaluator:
             print(f"データベースからのデータ取得中にエラーが発生しました: {e}")
             return []
 
-    def generate_response(self, query, context_1, context_2):
+    def generate_response(self, question, context):
         try:
             start_time = time.time()
 
             # コンテキストとクエリをプロンプトに組み合わせる
-            context_text = f"{context_1}\n\n{context_2}".strip()
-            prompt = f"以下は関連する会話の記録です。\n{context_text}\n\n質問: {query}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
+            context_text = f"{context}".strip()
+            prompt = f"以下は関連する会話の記録です。\n{context_text}\n\n質問: {question}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
                 messages=[
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=500,
                 temperature=self.temperature,
             )
 

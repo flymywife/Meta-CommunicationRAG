@@ -2,7 +2,6 @@
 
 import json
 import pandas as pd
-import streamlit as st
 import time
 import re
 from database import ConversationDatabase  # データベースクラスをインポート
@@ -75,7 +74,6 @@ class ConversationGenerator:
             start_time = time.time()
             response = self.gpt_client.call_gpt(
                 messages=messages,
-                max_tokens=500,
                 temperature=self.temperature
             )
             end_time = time.time()
@@ -89,7 +87,7 @@ class ConversationGenerator:
 
             return message, token_count, processing_time
         except Exception as e:
-            st.error(f"メッセージ生成中にエラーが発生しました: {e}")
+            print(f"メッセージ生成中にエラーが発生しました: {e}")
             return "", 0, 0
 
     def run_conversation(self):
@@ -119,7 +117,6 @@ class ConversationGenerator:
         conversation = []
         tokens = 0
         processing_time = 0
-        word_used = False  # ワードが既に使用されたかを追跡
 
         for info_index, info in enumerate(infos):
             if not info.strip():
@@ -130,11 +127,11 @@ class ConversationGenerator:
 
             # ユーザー発言にワードと情報を含める
             user_content = f"""
-Use the following words as the subject of the conversation and use the word information provided to start a natural conversation.
+    Use the following words as the subject of the conversation and use the word information provided to start a natural conversation.
 
-ワード: {word}
-情報: {info}
-"""
+    ワード: {word}
+    情報: {info}
+    """
 
             user_messages = [
                 {"role": "system", "content": self.user_prompt},
@@ -145,10 +142,6 @@ Use the following words as the subject of the conversation and use the word info
             user_response, token_count_user, time_user = self.generate_message(user_messages)
             tokens += token_count_user
             processing_time += time_user
-
-            # ワードがユーザー発言に含まれているか確認
-            if not word_used and self.word_in_text(word, user_response):
-                word_used = True
 
             # アシスタントの発言生成
             assistant_messages = [
@@ -161,11 +154,18 @@ Use the following words as the subject of the conversation and use the word info
             tokens += token_count_assistant
             processing_time += time_assistant
 
-            # 二回目以降の会話でワードを置換
-            if word_used and info_index >= 1:
+            if info_index >= 1:
+                # 置換前のユーザー・アシスタント発言を保存
+                before_user_response = user_response
+                before_assistant_response = assistant_response
+
                 # Function Calling を使用して置換語を取得し、ユーザーとアシスタントの発言を置換
                 user_response = self.replace_word_in_text(word, user_response)
                 assistant_response = self.replace_word_in_text(word, assistant_response)
+            else:
+                # 1回目の会話では空文字列を設定
+                before_user_response = ''
+                before_assistant_response = ''
 
             self.global_talk_num += 1  # talk_numをインクリメント
 
@@ -177,6 +177,8 @@ Use the following words as the subject of the conversation and use the word info
                 "info": info,
                 "user": user_response,
                 "assistant": assistant_response,
+                "before_user": before_user_response,
+                "before_assistant": before_assistant_response,
                 "token_count": str(token_count_user + token_count_assistant),
                 "processing_time": str(time_user + time_assistant),
                 "temperature": str(self.temperature),
@@ -194,6 +196,7 @@ Use the following words as the subject of the conversation and use the word info
             self.database.insert_conversation(entry)
 
         return conversation, tokens, processing_time
+
 
     def replace_word_in_text(self, word, text):
         # Function Calling を使用して置換語を取得
@@ -255,7 +258,6 @@ Context:
                 ],
                 functions=functions,
                 function_call={"name": "replace_word"},
-                max_tokens=50,
                 temperature=self.temperature,
             )
 
@@ -264,7 +266,7 @@ Context:
 
             function_response = response["choices"][0]["message"].get("function_call")
             if not function_response:
-                st.error("Function Callingのレスポンスが得られませんでした。")
+                print("Function Callingのレスポンスが得られませんでした。")
                 return {"replacement": "それ"}
 
             arguments = json.loads(function_response.get("arguments", "{}"))
@@ -274,7 +276,7 @@ Context:
             }
 
         except Exception as e:
-            st.error(f"置換語生成中にエラーが発生しました: {e}")
+            print(f"置換語生成中にエラーが発生しました: {e}")
             return {
                 "replacement": "それ"
             }

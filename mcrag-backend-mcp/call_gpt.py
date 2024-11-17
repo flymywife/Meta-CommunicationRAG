@@ -10,7 +10,7 @@ class GPTClient:
         self.api_key = api_key
         openai.api_key = self.api_key
 
-    def call_gpt(self, messages: list, max_tokens: int = 2000, temperature: float = 0.7) -> dict:
+    def call_gpt(self, messages: list, temperature: float = 0.7) -> dict:
         """
         通常のGPT呼び出し用メソッド。
 
@@ -26,7 +26,7 @@ class GPTClient:
             response = openai.ChatCompletion.create(
                 model=c.MODEL,
                 messages=messages,
-                max_tokens=max_tokens,
+                max_tokens=c.MAX_TOKENS,
                 temperature=temperature,
                 seed=c.SEED
             )
@@ -35,7 +35,7 @@ class GPTClient:
             st.error(f"ChatGPT呼び出し中にエラーが発生しました: {e}")
             return {}
 
-    def call_gpt_function(self, messages: list, functions: list, function_call: dict, max_tokens: int = 2000, temperature: float = 0.7) -> dict:
+    def call_gpt_function(self, messages: list, functions: list, function_call: dict, temperature: float = 0.7) -> dict:
         """
         Function Calling用のGPT呼び出しメソッド。
 
@@ -55,7 +55,7 @@ class GPTClient:
                 messages=messages,
                 functions=functions,
                 function_call=function_call,
-                max_tokens=max_tokens,
+                max_tokens=c.MAX_TOKENS,
                 temperature=temperature,
                 seed=c.SEED
             )
