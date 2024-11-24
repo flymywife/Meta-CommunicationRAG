@@ -10,3 +10,6 @@ SEED = 42
 PCA_DIMENTION = 768
 # max_tokens
 MAX_TOKENS = 2000
+# 以下はRAGモデルの名前
+VECTOR_SEARCH = "ベクトル検索"
+HYBRID_SEARCH = "ハイブリッド検索"

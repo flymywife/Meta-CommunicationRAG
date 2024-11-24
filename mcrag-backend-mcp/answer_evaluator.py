@@ -5,9 +5,12 @@ import json
 import logging
 from call_gpt import GPTClient  # GPTClientクラスをインポート
 from rag_models.model_vector_rerank import VectorSearchRerankModel  # VectorSearchRerankModelをインポート
-from rag_models.model_vector import VectorSearchModel  # VectorSearchModelをインポート
-from rag_models.model_faiss_rag import FAISSRAGModel  # VectorSearchModelをインポート
+from rag_models.model_numpy_vector import VectorSearchModel  # VectorSearchModelをインポート
+from rag_models.model_faiss_vector import FAISSVectorModel  # VectorSearchModelをインポート
 from database import ConversationDatabase, DataAlreadyExistsError, DataNotFoundError  # データベースクラスをインポート
+import constants as c
+
+
 
 class AnswerEvaluator:
     def __init__(self, api_key, temperature=0.7, db_file='conversation_data.db'):
@@ -21,8 +24,7 @@ class AnswerEvaluator:
 
         # RAGモデルのインスタンスを作成
         self.rag_models = {
-            'ベクトル検索': VectorSearchModel(api_key=self.api_key),
-            'FAISS検索': FAISSRAGModel(api_key=self.api_key)
+            c.VECTOR_SEARCH: FAISSVectorModel(api_key=self.api_key)
         }
 
         # データベースのインスタンスを作成
@@ -30,10 +32,17 @@ class AnswerEvaluator:
 
     def evaluate_answers(self, task_name):
         # データベースから質問と回答を取得
-        data_list = self.get_qas_from_db(task_name)
+        data_list = self.db.get_generated_qas_with_ids_by_task_name(task_name)
 
         if not data_list:
             raise DataNotFoundError(f"タスク名 '{task_name}' に対応する質問と回答が見つかりません。")
+
+        # タスクプロンプトを取得
+        character_prompt = self.db.get_tasks_character_prompt(task_name)
+
+        # data_listにプロンプトを追加
+        for entry in data_list:
+            entry.update({'character_prompt': character_prompt})
 
         results = []
 
@@ -63,7 +72,7 @@ class AnswerEvaluator:
                 get_talk_nums = context_result.get('get_talk_nums', '')
 
                 # GPTにクエリとコンテキストを渡して回答を生成
-                response_text, token_count, processing_time = self.generate_response(question, get_context)
+                response_text, token_count, processing_time = self.generate_response(question, get_context, character_prompt)
 
                 # 結果の保存
                 self.total_tokens += token_count
@@ -101,27 +110,21 @@ class AnswerEvaluator:
             logging.error(f"評価結果の保存中にエラーが発生しました: {e}")
             raise e
 
-    def get_qas_from_db(self, task_name):
-        # データベースから質問と回答を取得
-        try:
-            qas_list = self.db.get_generated_qas_with_ids_by_task_name(task_name)
-            return qas_list
-        except Exception as e:
-            print(f"データベースからのデータ取得中にエラーが発生しました: {e}")
-            return []
-
-    def generate_response(self, question, context):
+    def generate_response(self, question, context ,character_prompt):
         try:
             start_time = time.time()
 
             # コンテキストとクエリをプロンプトに組み合わせる
             context_text = f"{context}".strip()
-            prompt = f"以下は関連する会話の記録です。\n{context_text}\n\n質問: {question}\n\n上記の会話の記録に基づいて、この質問に対する適切な回答を指定されたキャラクターの口調を反映して提供してください。"
+            prompt = f"""{character_prompt}
+            \n以下は回答に必要な参考情報です：
+            \n{context_text}"""
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
                 messages=[
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": question},
                 ],
                 temperature=self.temperature,
             )

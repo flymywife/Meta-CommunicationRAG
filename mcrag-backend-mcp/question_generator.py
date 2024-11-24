@@ -61,7 +61,7 @@ class QuestionGenerator:
 
                 # 質問の生成
                 question, token_count_q, processing_time_q = self.generate_question(
-                    conversation_messages, user_prompt
+                    conversation_messages, user_prompt, word  # 'word'を追加
                 )
 
                 # 回答の生成
@@ -110,7 +110,7 @@ class QuestionGenerator:
 
         self.db.insert_generated_qa(db_entry)
 
-    def generate_question(self, conversation_messages, user_prompt):
+    def generate_question(self, conversation_messages, user_prompt, word):
         try:
             start_time = time.time()
             # システムプロンプト
@@ -123,52 +123,29 @@ class QuestionGenerator:
 以下の指示に従って、会話内容に関する質問を一つ生成してください。
 
 - 質問は必ず上記のユーザー設定の口調で作成してください。
+- 質問の主語は必ず「{word}」にしてください。
 - 質問は、与えられた会話内容を参照しなければ答えられない質問にしてください。
 - 独創的な質問はNGです。必ず与えられた会話内容から答えられる質問で、明確な回答が得られる質問にしてください。
-- 質問は具体的で明確であり、できるだけ簡潔な質問にしてください。
+- 未来予測をしなければ答えられない質問はNGです。必ず会話内容を参照すれば答えられる簡単な質問にしてください。
+- 質問はできるだけ簡潔にお願いします。
 - キャラクターの設定による口調を反映させ、自然な会話の流れを維持してください。
 """
 
-            # Function Callingの定義
-            functions = [
-                {
-                    "name": "generate_question",
-                    "description": "会話内容に関する質問を生成します。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "生成された質問。"
-                            }
-                        },
-                        "required": ["question"]
-                    }
-                }
-            ]
-
             # GPT呼び出し
-            response = self.gpt_client.call_gpt_function(
+            response = self.gpt_client.call_gpt(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *conversation_messages,
                     {"role": "user", "content": "上記の会話内容に関する質問を一つ作成してください。"}
                 ],
-                functions=functions,
-                function_call={"name": "generate_question"},
                 temperature=self.temperature,
             )
 
             if not response:
                 return "", 0, 0
 
-            function_response = response["choices"][0]["message"].get("function_call")
-            if not function_response:
-                print("Function Callingのレスポンスが得られませんでした。")
-                return "", 0, 0
-
-            arguments = json.loads(function_response.get("arguments", "{}"))
-            question = arguments.get("question", "")
+            message = response["choices"][0]["message"]
+            question = message.get('content', '').strip()
             token_count = response['usage']['total_tokens']
             end_time = time.time()
             processing_time = end_time - start_time

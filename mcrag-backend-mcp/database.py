@@ -159,6 +159,13 @@ class ConversationDatabase:
         ''')
         self.conn.commit()
 
+    def get_tasks_character_prompt(self, task_name):
+        select_sql = 'SELECT character_prompt FROM tasks WHERE task_name = ?'
+        character_prompt = self.cursor.execute(select_sql, (task_name,))
+        if not character_prompt or None in character_prompt:
+            raise ValueError(f"タスク '{task_name}' に対応するcharacter_promptが見つかりません。")
+        return character_prompt
+        
     def get_current_timestamp(self):
         # ミリ秒まで含めたタイムスタンプを取得
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]

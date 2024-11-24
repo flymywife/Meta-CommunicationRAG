@@ -43,4 +43,4 @@ elif page == "ベクトル化":
 elif page == "ワークフロー実行":
     show_workflow_execution_page(api_key, temperature)
 elif page == "分析":
-    show_analysis_page()
+    show_analysis_page(api_key)

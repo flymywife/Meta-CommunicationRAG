@@ -193,13 +193,75 @@ async def vectorize_conversations(request: Request):
             content={"detail": error_message},
             status_code=500
         )
+
+
 @app.get("/get_task_names")
 async def get_task_names():
     try:
-        analysis = Analysis()
+        analysis = Analysis(api_key="api_key不要")
         task_names = analysis.get_all_task_names()
         analysis.close()
 
         return JSONResponse(content={"task_names": task_names}, status_code=200)
     except Exception as e:
+        logging.error(f"Error in /get_task_names: {str(e)}")
         return JSONResponse(content={"detail": str(e)}, status_code=500)
+    
+
+@app.post("/get_cross_tab_data")
+async def get_cross_tab_data(request: Request):
+    try:
+        data = await request.json()
+        # 必要なフィールドが存在するかチェック
+        required_fields = ["api_key", "task_name"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+        task_names = data.get("task_names", [])
+        api_key = data["api_key"]
+
+        if not task_names:
+            raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
+
+        analysis = Analysis(api_key=api_key)
+        cross_tab_data = analysis.get_cross_tab_data(task_names)
+        analysis.close()
+
+        if cross_tab_data.empty:
+            return JSONResponse(content={"data": []}, status_code=200)
+        else:
+            cross_tab_data.columns = cross_tab_data.columns.map(str)
+            data = cross_tab_data.to_dict(orient='records')
+            return JSONResponse(content={"data": data}, status_code=200)
+    except Exception as e:
+        logging.error(f"Error in /get_cross_tab_data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"クロス集計データの取得中にエラーが発生しました: {e}")
+
+@app.post("/perform_pca")
+async def perform_pca(request: Request):
+    try:
+        data = await request.json()
+        # 必要なフィールドが存在するかチェック
+        required_fields = ["api_key", "task_names"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+        task_names = data.get("task_names", [])
+        api_key = data["api_key"]
+
+        if not task_names:
+            raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
+
+        analysis = Analysis(api_key=api_key)
+        pca_df, pca_model, vectorizer = analysis.perform_pca(task_names)
+        analysis.close()
+
+        if pca_df.empty:
+            return JSONResponse(content={"data": []}, status_code=200)
+        else:
+            # データを辞書に変換
+            data = pca_df.to_dict(orient='records')
+            return JSONResponse(content={"data": data}, status_code=200)
+    except Exception as e:
+        logging.error(f"Error in /perform_pca: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"主成分分析中にエラーが発生しました: {e}")
