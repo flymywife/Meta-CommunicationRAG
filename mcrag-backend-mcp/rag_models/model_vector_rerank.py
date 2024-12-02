@@ -50,17 +50,15 @@ class VectorSearchRerankModel(BaseRAGModel):
             # mMiniLM でリランキング
             reranked_contents, reranked_talk_nums = self.rerank_with_mMiniLM(query, top_contents, top_talk_nums)
 
-            # get_context_1 と get_context_2 を設定
-            get_context_1 = reranked_contents[0] if len(reranked_contents) > 0 else ''
-            get_context_2 = reranked_contents[1] if len(reranked_contents) > 1 else ''
+            # get_contextを設定
+            get_context = reranked_contents[0] if len(reranked_contents) > 0 else ''
 
             # get_talk_nums をカンマ区切りの文字列として設定
             get_talk_nums = ','.join(reranked_talk_nums[:2])
 
             # 結果を辞書で返す
             result = {
-                'get_context_1': get_context_1,
-                'get_context_2': get_context_2,
+                'get_context': get_context,
                 'get_talk_nums': get_talk_nums
             }
 

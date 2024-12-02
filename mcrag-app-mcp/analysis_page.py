@@ -28,8 +28,9 @@ def show_analysis_page(api_key):
     # 分析方法の選択
     analysis_method = st.radio(
         "分析方法を選択してください：",
-        ("クロス集計", "主成分分析")
+        ("クロス集計", "主成分分析", "ドリフトベクトル分析")
     )
+
 
     if analysis_method == "クロス集計":
         st.write("分析対象のタスクを選択してください。チェックを入れたタスクが分析に含まれます。")
@@ -52,7 +53,7 @@ def show_analysis_page(api_key):
                 # リクエストボディの作成
                 payload = {
                     "api_key": api_key,
-                    "task_name": selected_tasks
+                    "task_names": selected_tasks
                 }
                 response = requests.post(backend_url, json=payload)
                 if response.status_code == 200:
@@ -121,6 +122,55 @@ def show_analysis_page(api_key):
         else:
             st.info("少なくとも1つのタスクを選択してください。")
 
-    else:
-        st.error("不明な分析方法が選択されました。")
 
+    if analysis_method == "ドリフトベクトル分析":
+        st.write("分析対象のタスクを選択してください。チェックを入れたタスクが分析に含まれます。")
+        selected_tasks = []
+        checkboxes = {}
+
+        st.write("### タスク一覧")
+        for task_name in task_names:
+            checkboxes[task_name] = st.checkbox(task_name, value=False)
+
+        selected_tasks = [task for task, checked in checkboxes.items() if checked]
+
+        if selected_tasks:
+            # バックエンドにリクエストを送信
+            backend_url = "http://localhost:8000/calculate_drift_direction"
+            try:
+                payload = {
+                    "api_key": api_key,
+                    "task_names": selected_tasks
+                }
+                response = requests.post(backend_url, json=payload)
+                if response.status_code == 200:
+                    data = response.json()
+                    drift_data = data.get("data", [])
+                    if not drift_data:
+                        st.warning("選択されたタスクに対応するデータが見つかりませんでした。")
+                    else:
+                        drift_df = pd.DataFrame(drift_data)
+                        st.write("### ドリフトベクトルの解析結果")
+                        st.dataframe(drift_df)
+
+                        # コサイン類似度のヒストグラムを表示
+                        fig = px.histogram(drift_df, x='cosine_similarity', nbins=50, title='ドリフトベクトルの分布')
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # 単語別の散布図を表示
+                        fig_scatter = px.scatter(
+                            drift_df,
+                            x='word',
+                            y='cosine_similarity',
+                            color='task_name',
+                            title='トピック別ドリフトベクトル'
+                        )
+                        st.plotly_chart(fig_scatter, use_container_width=True)
+                else:
+                    st.error(f"ドリフトベクトルの解析中にエラーが発生しました: {response.text}")
+            except Exception as e:
+                st.error(f"ドリフトベクトルの解析中に例外が発生しました: {e}")
+        else:
+            st.info("少なくとも1つのタスクを選択してください。")
+
+    

@@ -212,8 +212,7 @@ async def get_task_names():
 async def get_cross_tab_data(request: Request):
     try:
         data = await request.json()
-        # 必要なフィールドが存在するかチェック
-        required_fields = ["api_key", "task_name"]
+        required_fields = ["api_key", "task_names"]
         for field in required_fields:
             if field not in data:
                 raise HTTPException(status_code=400, detail=f"Missing field: {field}")
@@ -221,22 +220,25 @@ async def get_cross_tab_data(request: Request):
         api_key = data["api_key"]
 
         if not task_names:
-            raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
+            raise HTTPException(status_code=400, detail="No task names specified.")
 
         analysis = Analysis(api_key=api_key)
+        print(f"ttttttttt:{task_names}", flush=True)
         cross_tab_data = analysis.get_cross_tab_data(task_names)
         analysis.close()
 
         if cross_tab_data.empty:
             return JSONResponse(content={"data": []}, status_code=200)
         else:
+            # Convert columns to string to ensure JSON serializability
             cross_tab_data.columns = cross_tab_data.columns.map(str)
             data = cross_tab_data.to_dict(orient='records')
             return JSONResponse(content={"data": data}, status_code=200)
     except Exception as e:
         logging.error(f"Error in /get_cross_tab_data: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"クロス集計データの取得中にエラーが発生しました: {e}")
-
+        raise HTTPException(status_code=500, detail=f"Error fetching cross tab data: {e}")
+    
+    
 @app.post("/perform_pca")
 async def perform_pca(request: Request):
     try:
@@ -265,3 +267,34 @@ async def perform_pca(request: Request):
     except Exception as e:
         logging.error(f"Error in /perform_pca: {str(e)}")
         raise HTTPException(status_code=500, detail=f"主成分分析中にエラーが発生しました: {e}")
+    
+
+
+@app.post("/calculate_drift_direction")
+async def calculate_drift_direction(request: Request):
+    try:
+        data = await request.json()
+        required_fields = ["api_key", "task_names"]
+        for field in required_fields:
+            if field not in data:
+                raise HTTPException(status_code=400, detail=f"Missing field: {field}")
+        task_names = data.get("task_names", [])
+        api_key = data["api_key"]
+
+        if not task_names:
+            raise HTTPException(status_code=400, detail="No task names specified.")
+
+        analysis = Analysis(api_key=api_key)
+        drift_df = analysis.calculate_drift_direction(task_names)
+        analysis.close()
+
+        if drift_df.empty:
+            return JSONResponse(content={"data": []}, status_code=200)
+        else:
+            # コサイン類似度をJSONシリアライズ可能な形式に変換
+            drift_df['cosine_similarity'] = drift_df['cosine_similarity'].fillna(0).astype(float)
+            data = drift_df.to_dict(orient='records')
+            return JSONResponse(content={"data": data}, status_code=200)
+    except Exception as e:
+        logging.error(f"Error in /calculate_drift_direction: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error calculating drift direction: {e}")

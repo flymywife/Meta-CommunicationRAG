@@ -115,6 +115,7 @@ class ConversationDatabase:
             content TEXT,
             row_vector BLOB,
             vector BLOB,
+            pca_vector BLOB,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id)
         )
         ''')
@@ -170,6 +171,7 @@ class ConversationDatabase:
         # ミリ秒まで含めたタイムスタンプを取得
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
 
+        
     def insert_task(self, task):
         try:
             insert_sql = '''
