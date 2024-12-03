@@ -7,16 +7,27 @@ import numpy as np
 import os
 import joblib  # PCAモデルの保存と読み込みに使用
 from vector_db import VectorDatabase
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
+import constants as c  # constants.py をインポート
+import openai
+
+
 
 class Analysis:
     def __init__(self, api_key, db_file='conversation_data.db', index_folder='faiss_index',
-                 index_file='faiss_index.index', pca_model_file='pca_model.joblib'):
+                 index_file='faiss_index.index', pca_model_file='pca_model.joblib'):        
         self.db = ConversationDatabase(db_file=db_file)
         self.vector_db = VectorDatabase(api_key=api_key, db_file=db_file, index_folder=index_folder, index_file=index_file)
+        self.api_key = api_key
+        openai.api_key = self.api_key
         self.pca_model_file = pca_model_file  # PCAモデルのファイルパス
+        self.pca = self.load_pca_model()
+        if self.pca is None:
+            self.pca = PCA(n_components=2)
 
-    def save_pca_model(self, pca):
-        joblib.dump(pca, self.pca_model_file)
+    def save_pca_model(self):
+        joblib.dump(self.pca, self.pca_model_file)
 
     def load_pca_model(self):
         if os.path.exists(self.pca_model_file):
@@ -158,135 +169,207 @@ class Analysis:
             return pd.DataFrame()
 
 
-
     def perform_pca(self, selected_tasks):
         try:
-            # 選択されたタスクに対応するベクトルと関連情報を取得
-            vectors_list = []
-            task_names = []
-            words = []
-            vector_ids_list = []
-            pca_vectors_list = []
+            placeholders = ','.join(['?'] * len(selected_tasks))
 
-            for task_name in selected_tasks:
-                try:
-                    # ベクトルと関連情報を取得
-                    vectors, contents, vector_ids, talk_nums, pca_vectors = self.vector_db.fetch_vectors_and_pca_vectors(task_name)
-                except ValueError as e:
-                    print(str(e))
-                    continue  # 次のタスクへ
+            # evaluated_answers と generated_qas、words_info を結合してデータを取得
+            select_sql = f'''
+            SELECT ea.qa_id, ea.task_id, ea.task_name, gq.question, ea.gpt_response, ea.expected_answer, wi.word, ea.model
+            FROM evaluated_answers ea
+            INNER JOIN generated_qas gq ON ea.qa_id = gq.qa_id
+            INNER JOIN words_info wi ON gq.word_info_id = wi.word_info_id
+            WHERE ea.task_name IN ({placeholders})
+            '''
+            self.db.cursor.execute(select_sql, selected_tasks)
+            rows = self.db.cursor.fetchall()
 
-                if vectors.size == 0:
-                    print(f"タスク名 '{task_name}' に対応するベクトルが見つかりませんでした。")
+            if not rows:
+                print("選択されたタスクに対応するデータが見つかりませんでした。")
+                return []
+
+            vectors = []
+            labels = []
+            qa_info = []
+
+            for row in rows:
+                qa_id, task_id, task_name, question_text, model_answer, expected_answer, word, model = row
+
+                if not model_answer or not expected_answer:
                     continue
 
-                vectors_list.append(vectors)
-                vector_ids_list.extend(vector_ids)
-                pca_vectors_list.extend(pca_vectors)
+                # 既にベクトルが保存されているかチェック
+                expected_vector, actual_vector = self.db.get_pca_vectors_by_qa_id_and_model(qa_id, model)
 
-                # タスク名とワードを取得
-                word_list = []
-                for talk_num in talk_nums:
-                    select_sql = '''
-                    SELECT wi.word
-                    FROM conversations c
-                    INNER JOIN words_info wi ON c.word_info_id = wi.word_info_id
-                    WHERE c.task_id = (SELECT task_id FROM tasks WHERE task_name = ?) AND c.talk_num = ?
-                    '''
-                    self.db.cursor.execute(select_sql, (task_name, talk_num))
-                    row = self.db.cursor.fetchone()
-                    word = row[0] if row else ''
-                    word_list.append(word)
+                if expected_vector is None or actual_vector is None:
+                    # ベクトルが存在しない場合、新しくベクトル化して保存
+                    actual_vector = self.get_embedding(model_answer)
+                    expected_vector = self.get_embedding(expected_answer)
 
-                task_names.extend([task_name] * len(vectors))
-                words.extend(word_list)
+                    # データベースに保存
+                    self.db.insert_pca_analysis(
+                        task_id=task_id,
+                        task_name=task_name,
+                        qa_id=qa_id,
+                        model=model,
+                        expected_vector=expected_vector,
+                        actual_vector=actual_vector
+                    )
 
-            if not vectors_list:
-                print("選択されたタスクに対応するデータが見つかりませんでした。")
-                return pd.DataFrame(), None, None
+                # ベクトルとラベルをリストに追加
+                vectors.extend([expected_vector, actual_vector])
+                labels.extend(['期待値', f'モデル: {model}'])
+                qa_info.extend([
+                    {
+                        'qa_id': qa_id,
+                        'task_name': task_name,
+                        'answer_type': '期待値',
+                        'question_text': question_text,
+                        'expected_answer': expected_answer,
+                        'model_answer': model_answer,
+                        'word': word,
+                        'model': model
+                    },
+                    {
+                        'qa_id': qa_id,
+                        'task_name': task_name,
+                        'answer_type': f'モデル: {model}',
+                        'question_text': question_text,
+                        'expected_answer': expected_answer,
+                        'model_answer': model_answer,
+                        'word': word,
+                        'model': model
+                    }
+                ])
 
-            # 全てのベクトルを結合
-            all_vectors = np.vstack(vectors_list)
+            if not vectors:
+                print("有効なベクトルデータがありません。")
+                return []
 
-            # PCAモデルをロードまたは新たに作成
-            pca = self.load_pca_model()
-            if pca is None:
-                print("PCAモデルが存在しません。新たにPCAを計算します。")
-                pca = PCA(n_components=2)
-                principalComponents = pca.fit_transform(all_vectors)
-                # PCAモデルを保存
-                self.save_pca_model(pca)
-                # PCAベクトルをデータベースに保存
-                for vector_id, pca_vector in zip(vector_ids_list, principalComponents):
-                    pca_vector_bytes = pca_vector.tobytes()
-                    update_sql = 'UPDATE vector_table SET pca_vector = ? WHERE vector_id = ?'
-                    self.db.cursor.execute(update_sql, (pca_vector_bytes, vector_id))
-                self.db.conn.commit()
-            else:
-                # 既存のPCAモデルを使用
-                principalComponents = pca.transform(all_vectors)
-                # pca_vector が存在しないデータに対してのみ保存
-                for vector_id, pca_vector, existing_pca_vector in zip(vector_ids_list, principalComponents, pca_vectors_list):
-                    if existing_pca_vector is None:
-                        pca_vector_bytes = pca_vector.tobytes()
-                        update_sql = 'UPDATE vector_table SET pca_vector = ? WHERE vector_id = ?'
-                        self.db.cursor.execute(update_sql, (pca_vector_bytes, vector_id))
-                self.db.conn.commit()
+            vectors = np.array(vectors)
+
+            # PCAの実行
+            principalComponents = self.pca.fit_transform(vectors)
+            self.save_pca_model()
 
             # 結果をデータフレームに格納
             pca_df = pd.DataFrame(data=principalComponents, columns=['PC1', 'PC2'])
-            pca_df['task_name'] = task_names
-            pca_df['word'] = words
+            qa_info_df = pd.DataFrame(qa_info)
+            pca_df = pd.concat([pca_df.reset_index(drop=True), qa_info_df.reset_index(drop=True)], axis=1)
 
-            return pca_df, pca, None
+            # ラベルを追加
+            pca_df['Label'] = labels
+
+            # 結果をリストに変換
+            result = pca_df.to_dict(orient='records')
+
+            return result
+
         except Exception as e:
-            print(f"Error performing PCA: {e}")
-            return pd.DataFrame(), None, None
-        
+            print(f"PCA分析中にエラーが発生しました: {e}")
+            return []
 
 
-    def calculate_drift_direction(self, selected_tasks):
+    def perform_svd_analysis(self, selected_tasks):
         try:
-            results = []
-            for task_name in selected_tasks:
-                # ベクトルを取得
-                select_sql = '''
-                SELECT v.query_vector, v.gold_answer_vector, v.rag_answer_vector, wi.word
-                FROM vector_table v
-                INNER JOIN tasks t ON v.task_id = t.task_id
-                INNER JOIN words_info wi ON v.word_info_id = wi.word_info_id
-                WHERE t.task_name = ? AND v.query_vector IS NOT NULL AND v.gold_answer_vector IS NOT NULL AND v.rag_answer_vector IS NOT NULL
-                '''
-                self.db.cursor.execute(select_sql, (task_name,))
-                rows = self.db.cursor.fetchall()
-                if not rows:
-                    continue  # データがない場合は次のタスクへ
+            placeholders = ','.join(['?'] * len(selected_tasks))
+            print("a", flush=True)
 
-                for row in rows:
-                    query_vector_blob, gold_vector_blob, rag_vector_blob, word = row
-                    if not query_vector_blob or not gold_vector_blob or not rag_vector_blob:
-                        continue  # ベクトルが欠損している場合はスキップ
+            # evaluated_answers テーブルからデータを取得
+            select_sql = f'''
+            SELECT ea.qa_id, ea.task_id, ea.task_name, ea.question, ea.gpt_response, ea.expected_answer
+            FROM evaluated_answers ea
+            WHERE ea.task_name IN ({placeholders})
+            '''
+            self.db.cursor.execute(select_sql, selected_tasks)
+            rows = self.db.cursor.fetchall()
 
-                    query_vector = np.frombuffer(query_vector_blob, dtype='float32')
-                    gold_vector = np.frombuffer(gold_vector_blob, dtype='float32')
-                    rag_vector = np.frombuffer(rag_vector_blob, dtype='float32')
+            if not rows:
+                print("選択されたタスクに対応するデータが見つかりませんでした。")
+                return []
+            print("b", flush=True)
 
-                    # ベクトル差分を計算
-                    V1 = gold_vector - query_vector
-                    V2 = rag_vector - gold_vector
+            svd_results = []
 
-                    # コサイン類似度を計算
-                    cosine_sim = self.cosine_similarity(V1, V2)
+            for row in rows:
+                qa_id, task_id, task_name, question_text, model_answer, expected_answer = row
 
-                    results.append({
-                        'task_name': task_name,
-                        'word': word,
-                        'cosine_similarity': cosine_sim
-                    })
-            return pd.DataFrame(results)
+                if not model_answer or not expected_answer:
+                    continue
+
+                # 既にベクトルが保存されているかチェック
+                expected_vector, actual_vector = self.db.get_svd_vectors_by_qa_id(qa_id)
+
+                if expected_vector is None or actual_vector is None:
+                    # ベクトルが存在しない場合、新しくベクトル化して保存
+                    # モデルの回答をEmbeddingベクトル化
+                    actual_vector = self.get_embedding(model_answer)
+
+                    # 期待値をEmbeddingベクトル化
+                    expected_vector = self.get_embedding(expected_answer)
+
+                    # データベースに保存
+                    self.db.insert_svd_analysis(
+                        task_id=task_id,
+                        task_name=task_name,
+                        qa_id=qa_id,
+                        expected_vector=expected_vector,
+                        actual_vector=actual_vector
+                    )
+
+                # 2つのベクトルをスタック
+                X = np.vstack([expected_vector, actual_vector])
+
+                # SVDの実行
+                svd = TruncatedSVD(n_components=2)
+                svd_result = svd.fit_transform(X)
+                print("c", flush=True)
+
+
+                # プロット用のデータを準備
+                coordinates = []
+                labels = ['expected', 'actual']
+                for i in range(2):
+                    coord = {
+                        'expected': float(svd_result[i, 0]),
+                        'actual': float(svd_result[i, 1]),
+                        'Label': labels[i]
+                    }
+                    coordinates.append(coord)
+                print("d", flush=True)
+
+                svd_results.append({
+                    'qa_id': qa_id,
+                    'question_text': question_text,
+                    'expected_answer': expected_answer,
+                    'model_answer': model_answer,
+                    'coordinates': coordinates
+                })
+                print("e", flush=True)
+
+            return svd_results
+
         except Exception as e:
-            print(f"Error in calculate_drift_direction: {e}")
-            return pd.DataFrame()
+            print(f"SVD分析中にエラーが発生しました: {e}")
+            return []
+
+
+    def get_embedding(self, text):
+        """
+        テキストをOpenAIのEmbeddingモデルを使用してベクトル化します。
+        """
+        try:
+            response = openai.Embedding.create(
+                input=text,
+                model=c.EMBEDDING_MODEL
+            )
+            embedding = response['data'][0]['embedding']
+            return np.array(embedding, dtype='float32')
+        except Exception as e:
+            print(f"Embedding取得中にエラーが発生しました: {e}")
+            return np.zeros((1536,), dtype='float32')  # モデルの次元数に合わせてゼロベクトルを返す
+
+
 
 
     def close(self):

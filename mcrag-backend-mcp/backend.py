@@ -243,7 +243,6 @@ async def get_cross_tab_data(request: Request):
 async def perform_pca(request: Request):
     try:
         data = await request.json()
-        # 必要なフィールドが存在するかチェック
         required_fields = ["api_key", "task_names"]
         for field in required_fields:
             if field not in data:
@@ -255,23 +254,20 @@ async def perform_pca(request: Request):
             raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
 
         analysis = Analysis(api_key=api_key)
-        pca_df, pca_model, vectorizer = analysis.perform_pca(task_names)
+        pca_results = analysis.perform_pca(task_names)
         analysis.close()
 
-        if pca_df.empty:
+        if not pca_results:
             return JSONResponse(content={"data": []}, status_code=200)
         else:
-            # データを辞書に変換
-            data = pca_df.to_dict(orient='records')
-            return JSONResponse(content={"data": data}, status_code=200)
+            return JSONResponse(content={"data": pca_results}, status_code=200)
     except Exception as e:
         logging.error(f"Error in /perform_pca: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"主成分分析中にエラーが発生しました: {e}")
-    
+        raise HTTPException(status_code=500, detail=f"PCA分析中にエラーが発生しました: {e}")
 
 
-@app.post("/calculate_drift_direction")
-async def calculate_drift_direction(request: Request):
+@app.post("/perform_svd_analysis")
+async def perform_svd_analysis(request: Request):
     try:
         data = await request.json()
         required_fields = ["api_key", "task_names"]
@@ -282,19 +278,16 @@ async def calculate_drift_direction(request: Request):
         api_key = data["api_key"]
 
         if not task_names:
-            raise HTTPException(status_code=400, detail="No task names specified.")
+            raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
 
         analysis = Analysis(api_key=api_key)
-        drift_df = analysis.calculate_drift_direction(task_names)
+        svd_results = analysis.perform_svd_analysis(task_names)
         analysis.close()
 
-        if drift_df.empty:
+        if not svd_results:
             return JSONResponse(content={"data": []}, status_code=200)
         else:
-            # コサイン類似度をJSONシリアライズ可能な形式に変換
-            drift_df['cosine_similarity'] = drift_df['cosine_similarity'].fillna(0).astype(float)
-            data = drift_df.to_dict(orient='records')
-            return JSONResponse(content={"data": data}, status_code=200)
+            return JSONResponse(content={"data": svd_results}, status_code=200)
     except Exception as e:
-        logging.error(f"Error in /calculate_drift_direction: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error calculating drift direction: {e}")
+        logging.error(f"Error in /perform_svd_analysis: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"SVD分析中にエラーが発生しました: {e}")

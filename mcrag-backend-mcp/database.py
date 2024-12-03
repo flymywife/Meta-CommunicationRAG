@@ -3,6 +3,7 @@
 import sqlite3
 import logging
 from datetime import datetime
+import numpy as np
 
 # ログの基本設定
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s [%(levelname)s] %(message)s')
@@ -159,6 +160,118 @@ class ConversationDatabase:
         )
         ''')
         self.conn.commit()
+        # svd_analysis テーブルの作成
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS svd_analysis (
+            svd_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            task_name TEXT NOT NULL,
+            qa_id INTEGER NOT NULL,
+            expected_vector BLOB,
+            actual_vector BLOB,
+            created_at TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id),
+            FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
+        )
+        ''')
+        self.conn.commit()
+        # pca_analysis テーブルの作成（model カラムを追加）
+        self.cursor.execute('''
+        CREATE TABLE IF NOT EXISTS pca_analysis (
+            pca_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL,
+            task_name TEXT NOT NULL,
+            qa_id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            expected_vector BLOB,
+            actual_vector BLOB,
+            created_at TEXT,
+            FOREIGN KEY (task_id) REFERENCES tasks (task_id),
+            FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
+        )
+        ''')
+        self.conn.commit()
+
+    # pca_analysis テーブルへのデータ挿入メソッドを修正
+    def insert_pca_analysis(self, task_id, task_name, qa_id, model, expected_vector, actual_vector):
+        insert_sql = '''
+        INSERT OR REPLACE INTO pca_analysis (
+            task_id, task_name, qa_id, model, expected_vector, actual_vector, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        '''
+        data = (
+            task_id,
+            task_name,
+            qa_id,
+            model,
+            expected_vector.tobytes() if expected_vector is not None else None,
+            actual_vector.tobytes() if actual_vector is not None else None,
+            self.get_current_timestamp()
+        )
+        try:
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+        except Exception as e:
+            print(f"pca_analysis テーブルへの挿入中にエラーが発生しました: {e}")
+
+    # pca_analysis テーブルからベクトルを取得するメソッドを修正
+    def get_pca_vectors_by_qa_id_and_model(self, qa_id, model):
+        select_sql = '''
+        SELECT expected_vector, actual_vector FROM pca_analysis WHERE qa_id = ? AND model = ?
+        '''
+        try:
+            self.cursor.execute(select_sql, (qa_id, model))
+            row = self.cursor.fetchone()
+            if row:
+                expected_vector = np.frombuffer(row[0], dtype=np.float32) if row[0] else None
+                actual_vector = np.frombuffer(row[1], dtype=np.float32) if row[1] else None
+                return expected_vector, actual_vector
+            else:
+                return None, None
+        except Exception as e:
+            print(f"pca_analysis テーブルからの取得中にエラーが発生しました: {e}")
+            return None, None
+
+    def get_svd_vectors_by_qa_id(self, qa_id):
+        """
+        指定された qa_id の expected_vector と actual_vector を取得します。
+        """
+        select_sql = '''
+        SELECT expected_vector, actual_vector FROM svd_analysis WHERE qa_id = ?
+        '''
+        try:
+            self.cursor.execute(select_sql, (qa_id,))
+            row = self.cursor.fetchone()
+            if row:
+                expected_vector = np.frombuffer(row[0], dtype=np.float32) if row[0] else None
+                actual_vector = np.frombuffer(row[1], dtype=np.float32) if row[1] else None
+                return expected_vector, actual_vector
+            else:
+                return None, None
+        except Exception as e:
+            logging.error(f"svd_analysis テーブルからの取得中にエラーが発生しました: {e}")
+            return None, None
+        
+    # svd_analysis テーブルへのデータ挿入メソッドを追加
+    def insert_svd_analysis(self, task_id, task_name, qa_id, expected_vector, actual_vector):
+        insert_sql = '''
+        INSERT INTO svd_analysis (
+            task_id, task_name, qa_id, expected_vector, actual_vector, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        '''
+        data = (
+            task_id,
+            task_name,
+            qa_id,
+            expected_vector.tobytes() if expected_vector is not None else None,
+            actual_vector.tobytes() if actual_vector is not None else None,
+            self.get_current_timestamp()
+        )
+        try:
+            self.cursor.execute(insert_sql, data)
+            self.conn.commit()
+        except Exception as e:
+            logging.error(f"svd_analysis テーブルへの挿入中にエラーが発生しました: {e}")
 
     def get_tasks_character_prompt(self, task_name):
         select_sql = 'SELECT character_prompt FROM tasks WHERE task_name = ?'

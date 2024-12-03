@@ -28,7 +28,7 @@ def show_analysis_page(api_key):
     # 分析方法の選択
     analysis_method = st.radio(
         "分析方法を選択してください：",
-        ("クロス集計", "主成分分析", "ドリフトベクトル分析")
+        ("クロス集計", "主成分分析",  "特異値分解（SVD）")
     )
 
 
@@ -74,7 +74,7 @@ def show_analysis_page(api_key):
 
 
 
-    elif analysis_method == "主成分分析":
+    if analysis_method == "主成分分析":
         st.write("分析対象のタスクを選択してください。")
         selected_tasks = []
         checkboxes = {}
@@ -87,10 +87,9 @@ def show_analysis_page(api_key):
         selected_tasks = [task for task, checked in checkboxes.items() if checked]
 
         if selected_tasks:
-            # 選択されたタスク名をバックエンドに送信してデータを取得
+            # バックエンドに選択されたタスク名を送信してPCA分析を実行
             backend_url = "http://localhost:8000/perform_pca"
             try:
-                # リクエストボディの作成
                 payload = {
                     "api_key": api_key,
                     "task_names": selected_tasks
@@ -98,36 +97,63 @@ def show_analysis_page(api_key):
                 response = requests.post(backend_url, json=payload)
                 if response.status_code == 200:
                     data = response.json()
-                    pca_data = data.get("data", [])
-                    if not pca_data:
+                    pca_results = data.get("data", [])
+                    if not pca_results:
                         st.warning("選択されたタスクに対応するデータが見つかりませんでした。")
                     else:
-                        df = pd.DataFrame(pca_data)
+                        st.write("### 主成分分析（PCA）の結果")
 
-                        # グラフの描画
-                        st.write("### 主成分分析の結果")
-                        fig = px.scatter(
-                            df,
-                            x='PC1',
-                            y='PC2',
-                            color='task_name',
-                            hover_data=['word'],
-                            title='主成分分析（PCA）結果'
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
+                        df = pd.DataFrame(pca_results)
+
+                        # 'word' ごとにデータをグループ化
+                        grouped = df.groupby('word')
+
+                        for word, group_df in grouped:
+                            st.write(f"#### Word: {word}")
+
+                            # グラフの描画
+                            fig = px.scatter(
+                                group_df,
+                                x='PC1',
+                                y='PC2',
+                                color='Label',
+                                hover_data=['qa_id', 'task_name', 'answer_type', 'model'],
+                                title=f'Word: {word}'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                            # 各 qa_id ごとに質問と回答を表示
+                            qa_ids = group_df['qa_id'].unique()
+                            for qa_id in qa_ids:
+                                qa_data = group_df[group_df['qa_id'] == qa_id]
+                                question_text = qa_data.iloc[0]['question_text']
+                                expected_answer = qa_data.iloc[0]['expected_answer']
+                                st.write(f"**QA ID: {qa_id}**")
+                                st.write(f"**質問文:** {question_text}")
+                                st.write(f"**期待値（模範回答）:** {expected_answer}")
+
+                                # モデルごとの回答を表示
+                                models = qa_data['model'].unique()
+                                for model in models:
+                                    model_data = qa_data[(qa_data['qa_id'] == qa_id) & (qa_data['model'] == model)]
+                                    model_answer = model_data.iloc[0]['model_answer']
+                                    st.write(f"**モデル [{model}] の回答:** {model_answer}")
+
+                                st.write("---")
+
                 else:
-                    st.error(f"主成分分析データの取得中にエラーが発生しました: {response.text}")
+                    st.error(f"PCAデータの取得中にエラーが発生しました: {response.text}")
             except Exception as e:
-                st.error(f"主成分分析データの取得中に例外が発生しました: {e}")
+                st.error(f"PCAデータの取得中に例外が発生しました: {e}")
         else:
             st.info("少なくとも1つのタスクを選択してください。")
+    
+    elif analysis_method == "特異値分解（SVD）":
+        st.write("分析対象のタスクを選択してください。")
 
-
-    if analysis_method == "ドリフトベクトル分析":
-        st.write("分析対象のタスクを選択してください。チェックを入れたタスクが分析に含まれます。")
+        # タスク選択のチェックボックス
         selected_tasks = []
         checkboxes = {}
-
         st.write("### タスク一覧")
         for task_name in task_names:
             checkboxes[task_name] = st.checkbox(task_name, value=False)
@@ -135,8 +161,8 @@ def show_analysis_page(api_key):
         selected_tasks = [task for task, checked in checkboxes.items() if checked]
 
         if selected_tasks:
-            # バックエンドにリクエストを送信
-            backend_url = "http://localhost:8000/calculate_drift_direction"
+            # バックエンドに選択されたタスク名を送信してSVD分析を実行
+            backend_url = "http://localhost:8000/perform_svd_analysis"
             try:
                 payload = {
                     "api_key": api_key,
@@ -145,32 +171,43 @@ def show_analysis_page(api_key):
                 response = requests.post(backend_url, json=payload)
                 if response.status_code == 200:
                     data = response.json()
-                    drift_data = data.get("data", [])
-                    if not drift_data:
+                    svd_results = data.get("data", [])
+                    if not svd_results:
                         st.warning("選択されたタスクに対応するデータが見つかりませんでした。")
                     else:
-                        drift_df = pd.DataFrame(drift_data)
-                        st.write("### ドリフトベクトルの解析結果")
-                        st.dataframe(drift_df)
+                        st.write("### 特異値分解（SVD）の結果")
 
-                        # コサイン類似度のヒストグラムを表示
-                        fig = px.histogram(drift_df, x='cosine_similarity', nbins=50, title='ドリフトベクトルの分布')
-                        st.plotly_chart(fig, use_container_width=True)
+                        # 各結果についてループし、グラフとテキストを表示
+                        for result in svd_results:
+                            qa_id = result['qa_id']
+                            question_text = result['question_text']
+                            expected_answer = result['expected_answer']
+                            model_answer = result['model_answer']
+                            coordinates = result['coordinates']
 
-                        # 単語別の散布図を表示
-                        fig_scatter = px.scatter(
-                            drift_df,
-                            x='word',
-                            y='cosine_similarity',
-                            color='task_name',
-                            title='トピック別ドリフトベクトル'
-                        )
-                        st.plotly_chart(fig_scatter, use_container_width=True)
+                            # グラフ描画用のデータフレームを作成
+                            df = pd.DataFrame(coordinates)
+
+                            # グラフの描画
+                            fig = px.scatter(
+                                df,
+                                x='expected',
+                                y='actual',
+                                color='Label',
+                                title=f'QA ID: {qa_id}, 質問: {question_text}'
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+
+                            # 期待値とモデルの回答を表示
+                            st.write("**期待値（模範回答）:**")
+                            st.write(expected_answer)
+                            st.write("**モデルの回答:**")
+                            st.write(model_answer)
+                            st.write("---")  # 区切り線
+
                 else:
-                    st.error(f"ドリフトベクトルの解析中にエラーが発生しました: {response.text}")
+                    st.error(f"SVDデータの取得中にエラーが発生しました: {response.text}")
             except Exception as e:
-                st.error(f"ドリフトベクトルの解析中に例外が発生しました: {e}")
+                st.error(f"SVDデータの取得中に例外が発生しました: {e}")
         else:
             st.info("少なくとも1つのタスクを選択してください。")
-
-    
