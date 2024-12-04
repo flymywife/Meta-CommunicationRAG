@@ -4,8 +4,7 @@ import time
 import json
 import logging
 from call_gpt import GPTClient  # GPTClientクラスをインポート
-from rag_models.model_vector_rerank import VectorSearchRerankModel  # VectorSearchRerankModelをインポート
-from rag_models.model_numpy_vector import VectorSearchModel  # VectorSearchModelをインポート
+from rag_models.model_hybrid import HybridSearchModel  # VectorSearchModelをインポート
 from rag_models.model_faiss_vector import FAISSVectorModel  # VectorSearchModelをインポート
 from database import ConversationDatabase, DataAlreadyExistsError, DataNotFoundError  # データベースクラスをインポート
 import constants as c
@@ -24,7 +23,8 @@ class AnswerEvaluator:
 
         # RAGモデルのインスタンスを作成
         self.rag_models = {
-            c.VECTOR_SEARCH: FAISSVectorModel(api_key=self.api_key)
+            c.VECTOR_SEARCH: FAISSVectorModel(api_key=self.api_key),
+            c.HYBRID_SEARCH: HybridSearchModel(api_key=self.api_key)
         }
 
         # データベースのインスタンスを作成
@@ -68,11 +68,17 @@ class AnswerEvaluator:
                 print(f"取得したコンテキスト: {context_result}")
 
                 # コンテキストの内容を取得
-                get_context = context_result.get('get_context', '')
+                get_contexts = '\n'.join([
+                    context_result.get(f'get_context_{i}', '') 
+                    for i in range(1, 6)
+                ])
                 get_talk_nums = context_result.get('get_talk_nums', '')
 
                 # GPTにクエリとコンテキストを渡して回答を生成
-                response_text, token_count, processing_time = self.generate_response(question, get_context, character_prompt)
+                response_text, token_count, processing_time = self.generate_response(
+                    question, get_contexts, character_prompt, get_talk_nums, task_name
+                )
+
 
                 # 結果の保存
                 self.total_tokens += token_count
@@ -88,7 +94,7 @@ class AnswerEvaluator:
                     'question': question,
                     'expected_answer': expected_answer,
                     'gpt_response': response_text,
-                    'get_context': get_context,
+                    'get_context': get_contexts,
                     'get_talk_nums': get_talk_nums,
                     'token_count': token_count,
                     'processing_time': processing_time,
@@ -110,22 +116,34 @@ class AnswerEvaluator:
             logging.error(f"評価結果の保存中にエラーが発生しました: {e}")
             raise e
 
-    def generate_response(self, question, context ,character_prompt):
+    def generate_response(self, question, context, character_prompt, get_talk_nums, task_name):
         try:
             start_time = time.time()
 
-            # コンテキストとクエリをプロンプトに組み合わせる
-            context_text = f"{context}".strip()
-            prompt = f"""{character_prompt}
-            \n以下は回答に必要な参考情報です：
-            \n{context_text}"""
+            # get_talk_numsをリストに変換
+            talk_num_list = [num.strip() for num in get_talk_nums.split(',') if num.strip()]
+
+            # 会話履歴を取得
+            conversation_history = self.db.get_conversation_history(task_name, talk_num_list)
+
+            # メッセージリストを構築
+            messages = []
+
+            # character_promptをsystemプロンプトとして追加
+            messages.append({"role": "system", "content": character_prompt})
+
+            # 会話履歴を時系列順に追加
+            for convo in conversation_history:
+                messages.append({"role": "user", "content": convo['user']})
+                messages.append({"role": "assistant", "content": convo['assistant']})
+
+            # 現在の質問を追加
+            messages.append({"role": "user", "content": question})
+
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": question},
-                ],
+                messages=messages,
                 temperature=self.temperature,
             )
 
