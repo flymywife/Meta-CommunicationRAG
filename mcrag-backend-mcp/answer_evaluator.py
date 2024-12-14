@@ -4,7 +4,8 @@ import time
 import json
 import logging
 from call_gpt import GPTClient  # GPTClientクラスをインポート
-from rag_models.model_hybrid import HybridSearchModel  # VectorSearchModelをインポート
+from rag_models.model_subject import SubjectSearchModel  # HybridSearchModelをインポート
+from rag_models.model_hybrid import HybridSearchModel  # HybridSearchModelをインポート
 from rag_models.model_faiss_vector import FAISSVectorModel  # VectorSearchModelをインポート
 from database import ConversationDatabase, DataAlreadyExistsError, DataNotFoundError  # データベースクラスをインポート
 import constants as c
@@ -23,8 +24,8 @@ class AnswerEvaluator:
 
         # RAGモデルのインスタンスを作成
         self.rag_models = {
-            c.VECTOR_SEARCH: FAISSVectorModel(api_key=self.api_key),
-            c.HYBRID_SEARCH: HybridSearchModel(api_key=self.api_key)
+
+            c.SUBJECT_SEARCH: SubjectSearchModel(api_key=self.api_key)
         }
 
         # データベースのインスタンスを作成

@@ -9,6 +9,8 @@ from fastapi.responses import JSONResponse
 from vector_db import vectorize_and_store
 from database import DataAlreadyExistsError  # 追加
 from analysis import Analysis  # analysis.py をインポート
+import uvicorn
+
 
 import logging
 
@@ -291,3 +293,14 @@ async def perform_svd_analysis(request: Request):
     except Exception as e:
         logging.error(f"Error in /perform_svd_analysis: {str(e)}")
         raise HTTPException(status_code=500, detail=f"SVD分析中にエラーが発生しました: {e}")
+    
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "backend:app",              # "app.py"ファイル内の "app" インスタンスを指定
+        host="0.0.0.0",         # ホスト指定 (必要に応じて変更)
+        port=8000,              # ポート指定 (必要に応じて変更)
+        timeout_keep_alive=99999,  # Keep-Alive接続のタイムアウトを30秒に延長
+        # 他にも必要なパラメータがあればここで指定可能
+        workers=1
+    )
