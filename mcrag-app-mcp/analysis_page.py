@@ -111,34 +111,69 @@ def show_analysis_page(api_key):
                         for word, group_df in grouped:
                             st.write(f"#### Word: {word}")
 
-                            # グラフの描画
+                            # Plotlyで散布図を作成
                             fig = px.scatter(
                                 group_df,
                                 x='PC1',
                                 y='PC2',
                                 color='Label',
-                                hover_data=['qa_id', 'task_name', 'answer_type', 'model'],
+                                hover_data=['qa_id', 'task_name', 'answer_type', 'model', 'distance'],
                                 title=f'Word: {word}'
                             )
+
+                            # 同じqa_id内で期待値("期待値")と"モデル: X"の点を線で結ぶ
+                            for qa_id_val, qa_group in group_df.groupby('qa_id'):
+                                expected_point = qa_group[qa_group['answer_type'] == '期待値']
+                                model_points = qa_group[qa_group['answer_type'].str.startswith('モデル:')]
+                                if len(expected_point) == 1:
+                                    exp_x = expected_point['PC1'].values[0]
+                                    exp_y = expected_point['PC2'].values[0]
+
+                                    for _, mrow in model_points.iterrows():
+                                        model_x = mrow['PC1']
+                                        model_y = mrow['PC2']
+                                        distance = mrow.get('distance', None)
+
+                                        # distanceの表示用テキスト
+                                        hover_text = f"Distance: {distance:.4f}" if distance is not None else "Distance: N/A"
+
+                                        # 線分を追加（scatterでmode='lines'またはfig.add_shape）
+                                        fig.add_trace(
+                                            px.scatter(
+                                                x=[exp_x, model_x],
+                                                y=[exp_y, model_y]
+                                            ).update_traces(
+                                                mode='lines',
+                                                line=dict(color='gray', dash='dot'),
+                                                hovertext=[hover_text],
+                                                hoverinfo='text'
+                                            ).data[0]
+                                        )
+
                             st.plotly_chart(fig, use_container_width=True)
 
                             # 各 qa_id ごとに質問と回答を表示
                             qa_ids = group_df['qa_id'].unique()
-                            for qa_id in qa_ids:
-                                qa_data = group_df[group_df['qa_id'] == qa_id]
+                            for qid in qa_ids:
+                                qa_data = group_df[group_df['qa_id'] == qid]
                                 question_text = qa_data.iloc[0]['question_text']
                                 expected_answer = qa_data.iloc[0]['expected_answer']
-                                st.write(f"**QA ID: {qa_id}**")
+                                st.write(f"**QA ID: {qid}**")
                                 st.write(f"**質問文:** {question_text}")
                                 st.write(f"**期待値（模範回答）:** {expected_answer}")
 
                                 # モデルごとの回答を表示
                                 models = qa_data['model'].unique()
-                                for model in models:
-                                    model_data = qa_data[(qa_data['qa_id'] == qa_id) & (qa_data['model'] == model)]
-                                    model_answer = model_data.iloc[0]['model_answer']
-                                    st.write(f"**モデル [{model}] の回答:** {model_answer}")
-
+                                for model_val in models:
+                                    # 期待値行は飛ばす
+                                    if model_val == qa_data.iloc[0]['model'] and qa_data.iloc[0]['answer_type'] == '期待値':
+                                        continue
+                                    model_data = qa_data[(qa_data['qa_id'] == qid) & (qa_data['model'] == model_val) & (qa_data['answer_type'].str.startswith('モデル:'))]
+                                    if not model_data.empty:
+                                        model_answer = model_data.iloc[0]['model_answer']
+                                        distance_val = model_data.iloc[0]['distance']
+                                        st.write(f"**モデル [{model_val}] の回答:** {model_answer}")
+                                        st.write(f"**期待値からの距離:** {distance_val}")
                                 st.write("---")
 
                 else:

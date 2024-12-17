@@ -162,7 +162,6 @@ def show_conversation_page(api_key, temperature):
                             st.write(f"**Info**: {turn['info']}")
                             st.write(f"**User**: {turn['user']}")
                             st.write(f"**Assistant**: {turn['assistant']}")
-                            st.write(f"**Token Count**: {turn['token_count']}")
                             st.write(f"**Processing Time**: {float(turn['processing_time']):.2f} seconds")
                             st.write("---")
                         # 合計のトークン数と処理時間を表示

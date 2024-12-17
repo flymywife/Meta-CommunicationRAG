@@ -173,7 +173,6 @@ class Analysis:
         try:
             placeholders = ','.join(['?'] * len(selected_tasks))
 
-            # evaluated_answers と generated_qas、words_info を結合してデータを取得
             select_sql = f'''
             SELECT ea.qa_id, ea.task_id, ea.task_name, gq.question, ea.gpt_response, ea.expected_answer, wi.word, ea.model
             FROM evaluated_answers ea
@@ -191,6 +190,10 @@ class Analysis:
             vectors = []
             labels = []
             qa_info = []
+            processed_expected = set()
+
+            # 一時的に期待値・モデル回答データを格納するための構造
+            data_map = {} # {qa_id: {"expected": (expected_vector, info_dict), "models": [(model_vector, model, info_dict), ...]}}
 
             for row in rows:
                 qa_id, task_id, task_name, question_text, model_answer, expected_answer, word, model = row
@@ -198,49 +201,86 @@ class Analysis:
                 if not model_answer or not expected_answer:
                     continue
 
-                # 既にベクトルが保存されているかチェック
                 expected_vector, actual_vector = self.db.get_pca_vectors_by_qa_id_and_model(qa_id, model)
-
                 if expected_vector is None or actual_vector is None:
-                    # ベクトルが存在しない場合、新しくベクトル化して保存
+                    # ベクトル化
                     actual_vector = self.get_embedding(model_answer)
-                    expected_vector = self.get_embedding(expected_answer)
+                    if qa_id not in processed_expected:
+                        expected_vector = self.get_embedding(expected_answer)
+                    else:
+                        # 既に期待値はDBに保存済みと想定可能
+                        expected_vector = self.get_embedding(expected_answer)
 
-                    # データベースに保存
+                    # DB保存
                     self.db.insert_pca_analysis(
                         task_id=task_id,
                         task_name=task_name,
                         qa_id=qa_id,
                         model=model,
                         expected_vector=expected_vector,
-                        actual_vector=actual_vector
+                        actual_vector=actual_vector,
+                        distance=None  # ここでは一旦Noneを入れて後で更新してもいいし、計算後再INSERTしてもOK
                     )
 
-                # ベクトルとラベルをリストに追加
-                vectors.extend([expected_vector, actual_vector])
-                labels.extend(['期待値', f'モデル: {model}'])
-                qa_info.extend([
-                    {
-                        'qa_id': qa_id,
-                        'task_name': task_name,
-                        'answer_type': '期待値',
-                        'question_text': question_text,
-                        'expected_answer': expected_answer,
-                        'model_answer': model_answer,
-                        'word': word,
-                        'model': model
-                    },
-                    {
-                        'qa_id': qa_id,
-                        'task_name': task_name,
-                        'answer_type': f'モデル: {model}',
-                        'question_text': question_text,
-                        'expected_answer': expected_answer,
-                        'model_answer': model_answer,
-                        'word': word,
-                        'model': model
+                # data_mapに格納
+                if qa_id not in data_map:
+                    data_map[qa_id] = {
+                        "task_id": task_id,
+                        "task_name": task_name,
+                        "question_text": question_text,
+                        "expected_answer": expected_answer,
+                        "word": word,
+                        "expected_vector": expected_vector,
+                        "models": []
                     }
-                ])
+
+                data_map[qa_id]["models"].append((actual_vector, model_answer, model))
+                processed_expected.add(qa_id)
+
+
+            # デバッグ用print：data_mapのサイズ
+            print("data_map size:", len(data_map))
+            # PCA用のデータを整形
+            # 期待値 -> 1行, モデル -> n行
+            for qa_id, val in data_map.items():
+                print("QA ID:", qa_id, "Models count:", len(val["models"]))
+
+                exp_vec = val["expected_vector"]
+                print("Appending QA info (expected):", qa_id, "model:", "expected")
+
+                vectors.append(exp_vec)
+                labels.append('期待値')
+                qa_info.append({
+                    'qa_id': qa_id,
+                    'task_id': val["task_id"],  # ここでtask_idを追加
+                    'task_name': val["task_name"],
+                    'answer_type': '期待値',
+                    'question_text': val["question_text"],
+                    'expected_answer': val["expected_answer"],
+                    'model_answer': val["expected_answer"],
+                    'word': val["word"],
+                    'model': 'expected'
+                })
+
+                for (act_vec, m_answer, m_model) in val["models"]:
+                    print("Appending QA info (model):", qa_id, "model:", m_model)
+                    vectors.append(act_vec)
+                    labels.append(f'モデル: {m_model}')
+                    qa_info.append({
+                        'qa_id': qa_id,
+                        'task_id': val["task_id"],  # ここでもtask_idを追加
+                        'task_name': val["task_name"],
+                        'answer_type': f'モデル: {m_model}',
+                        'question_text': val["question_text"],
+                        'expected_answer': val["expected_answer"],
+                        'model_answer': m_answer,
+                        'word': val["word"],
+                        'model': m_model
+                    })
+            # デバッグ用print
+            print("Length of vectors:", len(vectors))
+            print("Length of labels:", len(labels))
+            print("Length of qa_info:", len(qa_info))
 
             if not vectors:
                 print("有効なベクトルデータがありません。")
@@ -248,26 +288,63 @@ class Analysis:
 
             vectors = np.array(vectors)
 
-            # PCAの実行
             principalComponents = self.pca.fit_transform(vectors)
             self.save_pca_model()
+            print("principalComponents shape:", principalComponents.shape)
 
-            # 結果をデータフレームに格納
+
             pca_df = pd.DataFrame(data=principalComponents, columns=['PC1', 'PC2'])
             qa_info_df = pd.DataFrame(qa_info)
+            print("pca_df shape before concat:", pca_df.shape)
+            print("qa_info_df shape:", qa_info_df.shape)
+
             pca_df = pd.concat([pca_df.reset_index(drop=True), qa_info_df.reset_index(drop=True)], axis=1)
 
-            # ラベルを追加
+            print("pca_df shape after concat:", pca_df.shape)           
             pca_df['Label'] = labels
 
-            # 結果をリストに変換
-            result = pca_df.to_dict(orient='records')
+            # distance計算
+            pca_df['distance'] = None
 
+            # qa_idごとに期待値行とモデル行との距離を計算
+            for qa_id_val, gdf in pca_df.groupby('qa_id'):
+                expected_row = gdf[gdf['answer_type'] == '期待値']
+                model_rows = gdf[gdf['answer_type'].str.startswith('モデル:')]
+
+                if len(expected_row) == 1:
+                    exp_pc1 = expected_row['PC1'].values[0]
+                    exp_pc2 = expected_row['PC2'].values[0]
+
+                    for idx, mrow in model_rows.iterrows():
+                        model_pc1 = mrow['PC1']
+                        model_pc2 = mrow['PC2']
+                        dist = ((exp_pc1 - model_pc1)**2 + (exp_pc2 - model_pc2)**2)**0.5
+                        pca_df.at[idx, 'distance'] = dist
+
+                        # DB更新
+                        qa_id_db = mrow['qa_id']
+                        model_db = mrow['model']
+
+                        # すでにinsertしているデータがあるため、UPDATEかINSERT OR REPLACEでdistanceを更新可能
+                        # ここでは再度insert_pca_analysisで上書きする想定(qa_id,model一意でREPLACE)
+                        # 実装ではDISTANCEの更新専用UPDATEメソッドを作成してもよい
+                        self.db.insert_pca_analysis(
+                            task_id=mrow['task_id'],
+                            task_name=mrow['task_name'],
+                            qa_id=qa_id_db,
+                            model=model_db,
+                            expected_vector=None,  # Noneで既存値維持にはupdate文が必要
+                            actual_vector=None,
+                            distance=dist
+                        )
+
+            result = pca_df.to_dict(orient='records')
             return result
 
         except Exception as e:
             print(f"PCA分析中にエラーが発生しました: {e}")
             return []
+
 
 
     def perform_svd_analysis(self, selected_tasks):

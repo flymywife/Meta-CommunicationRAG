@@ -13,3 +13,4 @@ MAX_TOKENS = 2000
 # 以下はRAGモデルの名前
 VECTOR_SEARCH = "ベクトル検索"
 HYBRID_SEARCH = "ハイブリッド検索"
+SUBJECT_SEARCH = "主語検索"

@@ -80,15 +80,19 @@ class ConversationGenerator:
             processing_time = end_time - start_time
 
             if not response:
-                return "", 0, 0
+                return "", 0, 0, 0, processing_time
 
             message = response['choices'][0]['message']['content'].strip()
-            token_count = response['usage']['total_tokens']
+            token_usage = response['usage']
+            # token_count を分割して取得
+            prompt_tokens = token_usage.get('prompt_tokens', 0)
+            completion_tokens = token_usage.get('completion_tokens', 0)
+            total_tokens = prompt_tokens + completion_tokens
 
-            return message, token_count, processing_time
+            return message, total_tokens, prompt_tokens, completion_tokens, processing_time
         except Exception as e:
             print(f"メッセージ生成中にエラーが発生しました: {e}")
-            return "", 0, 0
+            return "", 0, 0, 0, 0
 
     def run_conversation(self):
         all_conversations = []
@@ -139,8 +143,8 @@ class ConversationGenerator:
                 {"role": "user", "content": user_content}
             ]
 
-            user_response, token_count_user, time_user = self.generate_message(user_messages)
-            tokens += token_count_user
+            user_response, user_total_tokens, user_input_tokens, user_output_tokens, time_user = self.generate_message(user_messages)
+            tokens += user_total_tokens
             processing_time += time_user
 
             # アシスタントの発言生成
@@ -150,8 +154,8 @@ class ConversationGenerator:
                 {"role": "user", "content": user_response}
             ]
 
-            assistant_response, token_count_assistant, time_assistant = self.generate_message(assistant_messages)
-            tokens += token_count_assistant
+            assistant_response, assistant_total_tokens, assistant_input_tokens, assistant_output_tokens, time_assistant = self.generate_message(assistant_messages)
+            tokens += assistant_total_tokens
             processing_time += time_assistant
 
             if info_index >= 1:
@@ -168,7 +172,11 @@ class ConversationGenerator:
                 before_assistant_response = ''
 
             self.global_talk_num += 1  # talk_numをインクリメント
-
+            
+            # インプットトークンとアウトプットトークンをconversationテーブルに保存
+            # input_token, output_tokenは、ユーザメッセージ生成とアシスタントメッセージ生成の合計を取る例
+            input_token = user_input_tokens + assistant_input_tokens
+            output_token = user_output_tokens + assistant_output_tokens
             # ユーザーの発言を会話に追加
             conversation_entry = {
                 "talk_num": str(self.global_talk_num),
@@ -179,7 +187,8 @@ class ConversationGenerator:
                 "assistant": assistant_response,
                 "before_user": before_user_response,
                 "before_assistant": before_assistant_response,
-                "token_count": str(token_count_user + token_count_assistant),
+                "input_token": input_token,     
+                "output_token": output_token,    
                 "processing_time": str(time_user + time_assistant),
                 "temperature": str(self.temperature),
                 "created_at": self.database.get_current_timestamp(),

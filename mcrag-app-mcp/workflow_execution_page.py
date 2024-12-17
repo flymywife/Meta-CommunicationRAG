@@ -224,6 +224,20 @@ def show_workflow_execution_page(api_key, temperature):
                     # ここでは、評価結果を表示します
                     evaluation_data = evaluation_response.json()
                     results = evaluation_data.get("results", [])
+
+                    def sort_key(result):
+                        talk_nums_str = result.get('talk_nums', '')
+                        if talk_nums_str:
+                            try:
+                                nums = [int(x) for x in talk_nums_str.split(',')]
+                                return nums
+                            except ValueError:
+                                pass
+                        # 数字でない場合は空のリストを返しておく（先頭に来る）
+                        return []
+
+                    results.sort(key=sort_key)
+
                     st.subheader("評価結果")
                     for result in results:
                         st.write(f"**Talk Nums**: {result.get('talk_nums', '')}")
@@ -234,7 +248,6 @@ def show_workflow_execution_page(api_key, temperature):
                         st.write(f"**GPT Response**: {result.get('gpt_response', '')}")
                         st.write(f"**Get Context 1**: {result.get('get_context', '')}")
                         st.write(f"**Get Talk Nums**: {result.get('get_talk_nums', '')}")
-                        st.write(f"**Token Count**: {result.get('token_count', 0)}")
                         st.write(f"**Processing Time**: {result.get('processing_time', 0):.2f} seconds")
                         st.write(f"**Model**: {result.get('model', '')}")
                         st.write("---")

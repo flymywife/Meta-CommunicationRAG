@@ -56,7 +56,8 @@ class ConversationDatabase:
             assistant TEXT,
             before_user TEXT,
             before_assistant TEXT,
-            token_count TEXT,
+            input_token INTEGER,
+            output_token INTEGER,
             processing_time TEXT,
             temperature TEXT,
             created_at TEXT,
@@ -75,13 +76,14 @@ class ConversationDatabase:
             talk_nums TEXT NOT NULL,
             question TEXT,
             answer TEXT,
-            token_count INTEGER,
+            input_token INTEGER,
+            output_token INTEGER,
             processing_time REAL,
             created_at TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id),
             FOREIGN KEY (word_info_id) REFERENCES words_info (word_info_id),
             UNIQUE (task_name, word_info_id, talk_nums)  -- 修正後の UNIQUE 制約
-)
+        )
         ''')
         # evaluated_answers テーブルの作成
         self.cursor.execute('''
@@ -97,7 +99,8 @@ class ConversationDatabase:
             gpt_response TEXT,
             get_context TEXT,
             get_talk_nums TEXT,
-            token_count INTEGER,
+            input_token INTEGER,
+            output_token INTEGER,            
             processing_time REAL,
             model TEXT NOT NULL,
             created_at TEXT,
@@ -154,6 +157,9 @@ class ConversationDatabase:
             rerank_score_5 REAL,
             processing_time REAL NOT NULL,
             model TEXT NOT NULL,
+            input_token_count INTEGER,
+            output_token_count INTEGER,
+            subject TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id),
             FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
@@ -175,7 +181,7 @@ class ConversationDatabase:
         )
         ''')
         self.conn.commit()
-        # pca_analysis テーブルの作成（model カラムを追加）
+        # pca_analysis テーブル (distance カラムを最初から含める)
         self.cursor.execute('''
         CREATE TABLE IF NOT EXISTS pca_analysis (
             pca_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,6 +191,7 @@ class ConversationDatabase:
             model TEXT NOT NULL,
             expected_vector BLOB,
             actual_vector BLOB,
+            distance REAL,
             created_at TEXT,
             FOREIGN KEY (task_id) REFERENCES tasks (task_id),
             FOREIGN KEY (qa_id) REFERENCES generated_qas (qa_id)
@@ -193,11 +200,11 @@ class ConversationDatabase:
         self.conn.commit()
 
     # pca_analysis テーブルへのデータ挿入メソッドを修正
-    def insert_pca_analysis(self, task_id, task_name, qa_id, model, expected_vector, actual_vector):
+    def insert_pca_analysis(self, task_id, task_name, qa_id, model, expected_vector, actual_vector, distance=None):
         insert_sql = '''
         INSERT OR REPLACE INTO pca_analysis (
-            task_id, task_name, qa_id, model, expected_vector, actual_vector, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            task_id, task_name, qa_id, model, expected_vector, actual_vector, distance, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         '''
         data = (
             task_id,
@@ -206,6 +213,7 @@ class ConversationDatabase:
             model,
             expected_vector.tobytes() if expected_vector is not None else None,
             actual_vector.tobytes() if actual_vector is not None else None,
+            distance,
             self.get_current_timestamp()
         )
         try:
@@ -214,7 +222,6 @@ class ConversationDatabase:
         except Exception as e:
             print(f"pca_analysis テーブルへの挿入中にエラーが発生しました: {e}")
 
-    # pca_analysis テーブルからベクトルを取得するメソッドを修正
     def get_pca_vectors_by_qa_id_and_model(self, qa_id, model):
         select_sql = '''
         SELECT expected_vector, actual_vector FROM pca_analysis WHERE qa_id = ? AND model = ?
@@ -275,10 +282,12 @@ class ConversationDatabase:
 
     def get_tasks_character_prompt(self, task_name):
         select_sql = 'SELECT character_prompt FROM tasks WHERE task_name = ?'
-        character_prompt = self.cursor.execute(select_sql, (task_name,))
-        if not character_prompt or None in character_prompt:
-            raise ValueError(f"タスク '{task_name}' に対応するcharacter_promptが見つかりません。")
-        return character_prompt
+        self.cursor.execute(select_sql, (task_name,))
+        result = self.cursor.fetchone()
+        if result and result[0]:
+            return result[0]
+        else:
+            raise ValueError(f"タスク '{task_name}' に対応する character_prompt が見つかりません。")
         
     def get_current_timestamp(self):
         # ミリ秒まで含めたタイムスタンプを取得
@@ -339,9 +348,10 @@ class ConversationDatabase:
         return result[0] if result else None
 
     def insert_conversation(self, entry):
+        # token_count を削除し、input_token, output_token を使う
         insert_sql = '''
-        INSERT INTO conversations (task_id, word_info_id, talk_num, user, assistant, before_user, before_assistant, token_count, processing_time, temperature, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO conversations (task_id, word_info_id, talk_num, user, assistant, before_user, before_assistant, input_token, output_token, processing_time, temperature, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         data = (
             entry['task_id'],
@@ -351,7 +361,8 @@ class ConversationDatabase:
             entry['assistant'],
             entry['before_user'],
             entry['before_assistant'],
-            entry['token_count'],
+            entry['input_token'],    # 新規追加
+            entry['output_token'],   # 新規追加
             entry['processing_time'],
             entry['temperature'],
             entry['created_at']
@@ -374,20 +385,20 @@ class ConversationDatabase:
         return result[0] > 0
 
     def insert_generated_qa(self, entry):
-        task_name = entry['task_name']
-
+        # generated_qasテーブルへの挿入時にtoken_countの代わりにinput_token/output_tokenを使用
         insert_sql = '''
-        INSERT INTO generated_qas (task_name, task_id, word_info_id, talk_nums, question, answer, token_count, processing_time, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO generated_qas (task_name, task_id, word_info_id, talk_nums, question, answer, input_token, output_token, processing_time, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         '''
         data = (
-            task_name,
+            entry['task_name'],
             entry['task_id'],
             entry['word_info_id'],
             entry['talk_nums'],
             entry['question'],
             entry['answer'],
-            entry['token_count'],
+            entry['input_token'],
+            entry['output_token'],
             entry['processing_time'],
             self.get_current_timestamp()
         )
@@ -396,9 +407,9 @@ class ConversationDatabase:
             self.conn.commit()
         except sqlite3.IntegrityError as e:
             logging.error(f"データベースへの挿入中にエラーが発生しました（重複データの可能性）: {e}")
-            # 必要に応じて例外を発生させる
         except Exception as e:
             logging.error(f"データベースへの挿入中にエラーが発生しました: {e}")
+
 
     def get_task_name_by_id(self, task_id):
         select_sql = 'SELECT task_name FROM tasks WHERE task_id = ?'
@@ -459,7 +470,7 @@ class ConversationDatabase:
 
     def get_generated_qas_by_task_name(self, task_name):
         select_sql = '''
-        SELECT gqa.talk_nums, gqa.task_name, wi.word, gqa.question, gqa.answer, gqa.token_count, gqa.processing_time
+        SELECT gqa.talk_nums, gqa.task_name, wi.word, gqa.question, gqa.answer, gqa.input_token, gqa.output_token, gqa.processing_time
         FROM generated_qas gqa
         INNER JOIN words_info wi ON gqa.word_info_id = wi.word_info_id
         WHERE gqa.task_name = ?
@@ -475,8 +486,9 @@ class ConversationDatabase:
                     'word': row[2],
                     'question': row[3],
                     'answer': row[4],
-                    'token_count': row[5],
-                    'processing_time': row[6]
+                    'input_token': row[5],
+                    'output_token': row[6],
+                    'processing_time': row[7]
                 })
             return qas_list
         except Exception as e:
@@ -540,8 +552,9 @@ class ConversationDatabase:
         INSERT INTO evaluated_answers (
             qa_id, task_name, task_id, word_info_id, talk_nums, question,
             expected_answer, gpt_response, get_context, get_talk_nums,
-            token_count, processing_time, model, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            input_token, output_token,     -- token_count の代わり
+            processing_time, model, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         '''
         data = (
             result_entry['qa_id'],
@@ -554,7 +567,8 @@ class ConversationDatabase:
             result_entry['gpt_response'],
             result_entry['get_context'],
             result_entry['get_talk_nums'],
-            result_entry['token_count'],
+            result_entry['input_token'],   # 新規追加
+            result_entry['output_token'],  # 新規追加
             result_entry['processing_time'],
             result_entry['model'],
             result_entry.get('created_at', self.get_current_timestamp())
@@ -577,7 +591,8 @@ class ConversationDatabase:
             wi.word,
             gqa.question,
             gqa.answer,
-            gqa.token_count,
+            gqa.input_token,
+            gqa.output_token,
             gqa.processing_time,
             gqa.task_id,
             gqa.word_info_id
@@ -597,10 +612,11 @@ class ConversationDatabase:
                     'word': row[3],
                     'question': row[4],
                     'answer': row[5],
-                    'token_count': row[6],
-                    'processing_time': row[7],
-                    'task_id': row[8],
-                    'word_info_id': row[9]
+                    'input_token': row[6],
+                    'output_token': row[7],
+                    'processing_time': row[8],
+                    'task_id': row[9],
+                    'word_info_id': row[10]
                 })
             return qas_list
         except Exception as e:
@@ -628,14 +644,15 @@ class ConversationDatabase:
             BM25_score_1, BM25_score_2, BM25_score_3, BM25_score_4, BM25_score_5,
             rss_rank_1, rss_rank_2, rss_rank_3, rss_rank_4, rss_rank_5,
             rerank_score_1, rerank_score_2, rerank_score_3, rerank_score_4, rerank_score_5,
-            processing_time, model, created_at
+            processing_time, model, input_token_count, output_token_count, subject, created_at
         ) VALUES (?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                ?, ?, ?)
+                ?, ?, ?, ?,
+                ?, ?)
         '''
         data = (
             result_entry['qa_id'],
@@ -668,6 +685,9 @@ class ConversationDatabase:
             result_entry.get('rerank_score_5', None),
             result_entry.get('processing_time', None),
             result_entry.get('model', ''),
+            result_entry.get('input_token_count', 0),    # 主語抽出時などのinput token数
+            result_entry.get('output_token_count', 0),    # 主語抽出時などのoutput token数
+            result_entry.get('subject', ''),  # 主語を保存
             result_entry.get('created_at', self.get_current_timestamp())
         )
         try:
@@ -715,6 +735,32 @@ class ConversationDatabase:
             return results
         except Exception as e:
             logging.error(f"rag_results テーブルからのデータ取得中にエラーが発生しました: {e}")
+            return []
+        
+    def get_conversation_history(self, task_name, talk_num_list):
+        select_sql = '''
+        SELECT c.user, c.assistant, c.created_at
+        FROM conversations c
+        INNER JOIN tasks t ON c.task_id = t.task_id
+        WHERE t.task_name = ? AND c.talk_num IN ({seq})
+        ORDER BY c.created_at ASC
+        '''.format(seq=','.join(['?']*len(talk_num_list)))
+
+        params = [task_name] + talk_num_list
+
+        try:
+            self.cursor.execute(select_sql, params)
+            rows = self.cursor.fetchall()
+            conversation_history = []
+            for row in rows:
+                conversation_history.append({
+                    'user': row[0],
+                    'assistant': row[1],
+                    'created_at': row[2]
+                })
+            return conversation_history
+        except Exception as e:
+            logging.error(f"会話履歴の取得中にエラーが発生しました: {e}")
             return []
 
     def close(self):

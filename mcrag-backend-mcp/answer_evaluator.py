@@ -76,13 +76,16 @@ class AnswerEvaluator:
                 get_talk_nums = context_result.get('get_talk_nums', '')
 
                 # GPTにクエリとコンテキストを渡して回答を生成
-                response_text, token_count, processing_time = self.generate_response(
+                # token_count の代わりに input_token, output_token を使用するため、prompt_tokens, completion_tokensを取得する
+                response_text, total_tokens, prompt_tokens, completion_tokens, processing_time = self.generate_response(
                     question, get_contexts, character_prompt, get_talk_nums, task_name
                 )
 
+                # input_token, output_token を計算
+                input_token = prompt_tokens
+                output_token = completion_tokens
 
-                # 結果の保存
-                self.total_tokens += token_count
+                self.total_tokens += total_tokens
                 self.total_processing_time += processing_time
 
                 result_entry = {
@@ -97,9 +100,10 @@ class AnswerEvaluator:
                     'gpt_response': response_text,
                     'get_context': get_contexts,
                     'get_talk_nums': get_talk_nums,
-                    'token_count': token_count,
+                    'input_token': input_token,
+                    'output_token': output_token,
                     'processing_time': processing_time,
-                    'model': model_name  # モデル名を追加
+                    'model': model_name
                 }
                 results.append(result_entry)
 
@@ -149,18 +153,21 @@ class AnswerEvaluator:
             )
 
             if not response:
-                return "", 0, 0
+                return "", 0, 0, 0, 0
 
             end_time = time.time()
             processing_time = end_time - start_time
 
             message = response['choices'][0]['message']['content'].strip()
-            token_count = response['usage']['total_tokens']
+            usage = response['usage']
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            total_tokens = prompt_tokens + completion_tokens
 
-            return message, token_count, processing_time
+            return message, total_tokens, prompt_tokens, completion_tokens, processing_time
         except Exception as e:
             print(f"回答生成中にエラーが発生しました: {e}")
-            return "", 0, 0
+            return "", 0, 0, 0, 0
 
     def close(self):
         self.db.close()

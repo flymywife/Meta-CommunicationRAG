@@ -60,17 +60,20 @@ class QuestionGenerator:
                 conversation_messages = self.get_conversation_messages(entry)
 
                 # 質問の生成
-                question, token_count_q, processing_time_q = self.generate_question(
-                    conversation_messages, user_prompt, word  # 'word'を追加
+                question, q_total_tokens, q_input_tokens, q_output_tokens, processing_time_q = self.generate_question(
+                    conversation_messages, user_prompt, word
                 )
 
                 # 回答の生成
-                answer, token_count_a, processing_time_a = self.generate_answer(
+                answer, a_total_tokens, a_input_tokens, a_output_tokens, processing_time_a = self.generate_answer(
                     conversation_messages, question, character_prompt
                 )
 
-                # 結果の保存
-                total_token_count = token_count_q + token_count_a
+                # トークン数を分離
+                input_token = q_input_tokens + a_input_tokens
+                output_token = q_output_tokens + a_output_tokens
+
+                total_token_count = q_total_tokens + a_total_tokens
                 total_processing_time = processing_time_q + processing_time_a
                 self.total_tokens += total_token_count
                 self.total_processing_time += total_processing_time
@@ -81,7 +84,8 @@ class QuestionGenerator:
                     'word': word,
                     'question': question.strip(),
                     'answer': answer.strip(),
-                    'token_count': total_token_count,
+                    'input_token': input_token,      # 新規追加
+                    'output_token': output_token,    # 新規追加
                     'processing_time': total_processing_time,
                     'task_id': task_id,
                     'word_info_id': word_info_id
@@ -104,7 +108,8 @@ class QuestionGenerator:
             'talk_nums': result_entry['talk_nums'],
             'question': result_entry['question'],
             'answer': result_entry['answer'],
-            'token_count': result_entry['token_count'],
+            'input_token': result_entry['input_token'],   # 新規追加
+            'output_token': result_entry['output_token'], # 新規追加 
             'processing_time': result_entry['processing_time']
         }
 
@@ -115,64 +120,59 @@ class QuestionGenerator:
             start_time = time.time()
             # システムプロンプト
             system_prompt = f"""
-以下のユーザー設定に基づいて、与えられた会話内容に関する質問を作成してください。
+以下のキャラクター設定に基づき、会話履歴の情報だけで回答可能な簡単な質問を作成します。
 
-ユーザー設定:
+キャラクター設定:
 {user_prompt}
-
-以下の指示に従って、会話内容に関する質問を一つ生成してください。
-
-- 質問は必ず上記のユーザー設定の口調で作成してください。
-- 質問の主語は必ず「{word}」にしてください。
-- 質問は、与えられた会話内容を参照しなければ答えられない質問にしてください。
-- 独創的な質問はNGです。必ず与えられた会話内容から答えられる質問で、明確な回答が得られる質問にしてください。
-- 未来予測をしなければ答えられない質問はNGです。必ず会話内容を参照すれば答えられる簡単な質問にしてください。
-- 質問はできるだけ簡潔にお願いします。
-- キャラクターの設定による口調を反映させ、自然な会話の流れを維持してください。
+- 質問の主語には必ず{word}を使用してください。
 """
 
+            query = f"""
+以下の手順に従って、会話の内容に関する質問を1つ作成してください。
+
+- 質問は、会話の履歴を参照すれば誰でも簡単に答えられるもの、考えなくても答えられるもの。
+- 会話の流れは自然で、登場人物の設定を反映させること。
+- 会話履歴から連想・考察が必要な質問はNGです。例えば
+・「どう思う？」はダメ
+・「その場合どうする？」はダメ
+・「あなたはどう考える？」はダメ
+などの考察が必要な質問はダメ。
+良い質問は正誤がはっきりと会話履歴を読めば誰でもわかる質問。
+- 会話履歴の中で名詞がある場合はそれを質問に積極的に取り入れること。
+"""
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     *conversation_messages,
-                    {"role": "user", "content": "上記の会話内容に関する質問を一つ作成してください。"}
+                    {"role": "user", "content": query}
                 ],
                 temperature=self.temperature,
             )
 
             if not response:
-                return "", 0, 0
+                return "", 0, 0, 0, 0
 
             message = response["choices"][0]["message"]
             question = message.get('content', '').strip()
-            token_count = response['usage']['total_tokens']
+            usage = response['usage']
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            total_tokens = prompt_tokens + completion_tokens
             end_time = time.time()
             processing_time = end_time - start_time
 
-            return question, token_count, processing_time
+            return question, total_tokens, prompt_tokens, completion_tokens, processing_time
 
         except Exception as e:
             print(f"質問生成中にエラーが発生しました: {e}")
-            return "", 0, 0
+            return "", 0, 0, 0, 0
 
     def generate_answer(self, conversation_messages, question, character_prompt):
         try:
             start_time = time.time()
             # システムプロンプト
-            system_prompt = f"""
-あなたは以下のキャラクター設定に基づいて、質問に回答する専門家です。
-
-キャラクター設定:
-{character_prompt}
-
-以下の指示に従って、質問に対する回答を生成してください。
-
-- 回答は必ず上記のキャラクター設定の口調で作成してください。
-- 回答は、提供された会話内容に基づいて、質問の全ての部分にしっかりと答えてください。
-- 会話内容を参照し、正確かつ詳細な情報を提供してください。
-- キャラクターの性格や背景を反映させ、自然な会話の流れを維持してください。
-"""
+            system_prompt = f"""{character_prompt}"""
 
             # GPT呼び出し
             response = self.gpt_client.call_gpt(
@@ -185,20 +185,23 @@ class QuestionGenerator:
             )
 
             if not response:
-                return "", 0, 0
+                return "", 0, 0, 0, 0
 
             message = response["choices"][0]["message"]
             answer = message.get('content', '').strip()
-            token_count = response['usage']['total_tokens']
+            usage = response['usage']
+            prompt_tokens = usage.get('prompt_tokens', 0)
+            completion_tokens = usage.get('completion_tokens', 0)
+            total_tokens = prompt_tokens + completion_tokens
             end_time = time.time()
             processing_time = end_time - start_time
 
-            return answer, token_count, processing_time
+            return answer, total_tokens, prompt_tokens, completion_tokens, processing_time
 
         except Exception as e:
             print(f"回答生成中にエラーが発生しました: {e}")
             print(f"エラー詳細: {e}")
-            return "", 0, 0
+            return "", 0, 0, 0, 0
 
     def get_conversation_messages(self, entry):
         # 会話履歴をメッセージ形式に変換
