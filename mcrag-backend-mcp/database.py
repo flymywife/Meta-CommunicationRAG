@@ -536,16 +536,6 @@ class ConversationDatabase:
         result = self.cursor.fetchone()
         return result[0] > 0
     
-    
-    def has_evaluated_answers(self, task_name: str) -> bool:
-        """
-        指定された task_name に対して、evaluated_answers テーブルに既に評価結果が存在するかを確認します。
-        """
-        select_sql = 'SELECT COUNT(*) FROM evaluated_answers WHERE task_name = ?'
-        self.cursor.execute(select_sql, (task_name,))
-        result = self.cursor.fetchone()
-        return result[0] > 0
-    
 
     def insert_evaluated_answer(self, result_entry):
         insert_sql = '''
@@ -624,12 +614,18 @@ class ConversationDatabase:
             return []
         
     def has_evaluated_answers(self, task_name, model_name):
-        select_sql = '''
-        SELECT COUNT(*) FROM evaluated_answers WHERE task_name = ? AND model = ?;
-        '''
-        self.cursor.execute(select_sql, (task_name, model_name))
-        result = self.cursor.fetchone()
-        return result[0] > 0
+        """
+        指定した task_name と model_name の組み合わせで既に評価済みの回答があるかどうかを返す
+        """
+        query = """
+            SELECT COUNT(*) 
+            FROM evaluated_answers 
+            WHERE task_name = ? AND model = ?
+        """
+        self.cursor.execute(query, (task_name, model_name))
+        count = self.cursor.fetchone()[0]
+
+        return count > 0
     
 
     def insert_rag_result(self, result_entry):

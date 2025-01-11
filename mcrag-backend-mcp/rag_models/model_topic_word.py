@@ -1,4 +1,4 @@
-# rag_models/model_subject.py
+# rag_models/model_topic_word.py
 
 from typing import Any, Dict
 from .base_model import BaseRAGModel
@@ -8,64 +8,72 @@ from call_gpt import GPTClient
 import numpy as np
 import constants as c
 import time
+import json
 
 
-class SubjectSearchModel(BaseRAGModel):
+class TopicWordSearchModel(BaseRAGModel):
     def __init__(self, api_key: str, db_file: str = 'conversation_data.db'):
         super().__init__(api_key=api_key, db_file=db_file)
         # GPTClientのインスタンスを作成
         self.gpt_client = GPTClient(api_key=self.api_key)
 
-        # Function Callingで使用するFunction定義
+        # Function Calling で使用するFunction定義
         self.functions = [
             {
-                "name": "extract_subject",
-                "description": "Extracts the proper nouns contained in the subject from the given Japanese query. Only that single word is returned without any additional description.",
+                "name": "extract_main_proper_noun",
+                "description": (
+                    "Extract from the given Japanese query the single proper noun that best represents "
+                    "the main topic or entity the user is asking about. If none is relevant, return an empty string."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "subject": {
+                        "proper_noun": {
                             "type": "string",
-                            "description": "The extracted subject as a single noun from the query. Must be exactly one word from the query."
+                            "description": (
+                                "The single proper noun (one word) that is the main focus of the user's query. "
+                                "No extra text or quotes."
+                            )
                         }
                     },
-                    "required": ["subject"]
+                    "required": ["proper_noun"]
                 }
             }
         ]
-        self.subject_extraction_input_tokens = 0
-        self.subject_extraction_output_tokens = 0   
 
+        self.subject_extraction_input_tokens = 0
+        self.subject_extraction_output_tokens = 0
 
     def extract_subject(self, query: str) -> str:
         """
-        LLMのFunction Callingを用いて、クエリから主語となる単語を一語抽出する。
+        LLMのFunction Callingを用いて、クエリから
+        「ユーザが本当に知りたい（尋ねている）対象となる固有名詞」を一語だけ抽出する。
+
         ポリシー：
-        - クエリから主語として最適な名詞を一語だけ選ぶ
-        - 返す値はその名詞一語のみ。余計な文字や引用符、補足はいらない
-        - クエリに主語らしき名詞がない場合は空文字を返す
+        - ユーザの呼びかけ先や相手の名前(例: 「ロボくん」など)ではなく、
+          ユーザが情報を求めている「本題となる固有名詞」を選ぶ
+        - 返す値はその固有名詞一語のみ。余計な文字や引用符・補足は不要
+        - クエリに適切な固有名詞がない場合は空文字を返す
         """
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are a function to extract the main subject from a Japanese query. "
-                    "Rules:\n"
-                    "1. Identify the main subject noun (a single word) from the user's query.\n"
-                    "2. Return only that one word. No other text, no explanation.\n"
-                    "3. If multiple candidates exist, choose the noun that best represents the main topic.\n"
-                    "4. If no suitable subject noun is found, return an empty string.\n"
-                    "5. Do not add quotes or extra punctuation around the word.\n"
+                    "You are a function that extracts from a Japanese query the single proper noun (one word) that "
+                    "the user is actually inquiring about. Ignore any name used purely for addressing or calling out. "
+                    "If multiple proper nouns appear, choose the one that is truly the focus of the question. "
+                    "If no appropriate proper noun is found, return an empty string. "
+                    "Output only the single noun, no quotes or explanations."
                 )
             },
             {
                 "role": "user",
-                "content": f"以下のクエリから主語となる固有名詞を一語抽出してください:\n{query}"
+                "content": f"以下のクエリから、ユーザが本当に知りたい情報の対象となる固有名詞を一語抽出してください:\n{query}"
             }
         ]
 
         # function_callで特定の関数呼び出しを強制
-        function_call = {"name": "extract_subject"}
+        function_call = {"name": "extract_main_proper_noun"}
 
         response = self.gpt_client.call_gpt_function(
             messages=messages,
@@ -73,6 +81,7 @@ class SubjectSearchModel(BaseRAGModel):
             function_call=function_call,
             temperature=0.0
         )
+
         # トークン数取得(usageがあると仮定)
         if 'usage' in response:
             self.subject_extraction_input_tokens = response['usage'].get('prompt_tokens', 0)
@@ -80,33 +89,38 @@ class SubjectSearchModel(BaseRAGModel):
         else:
             self.subject_extraction_input_tokens = 0
             self.subject_extraction_output_tokens = 0
-        # responseからfunction callの引数を取得
+
+        # response から function_call の引数を取得
         if response and "choices" in response and len(response["choices"]) > 0:
             choice = response["choices"][0]
             if "message" in choice and "function_call" in choice["message"]:
-                # 引数はJSON文字列として返されるのでパース
                 args_str = choice["message"]["function_call"]["arguments"]
-                import json
-                args = json.loads(args_str)
-                subject = args.get("subject", "")
-                return subject
+                try:
+                    args = json.loads(args_str)
+                    proper_noun = args.get("proper_noun", "")
+                    return proper_noun
+                except:
+                    return ""
         return ""
-    
 
     def retrieve_context(self, query: str, task_name: str, qa_id: int) -> Dict[str, Any]:
         """
         クエリに関連するコンテキストを取得します。
-        ここでは LLM Function Callingで抽出した主語をコンテキストとして返します。
+        1. LLM Function Callingで抽出した固有名詞(本題)を取得
+        2. その固有名詞をキーに会話履歴を探索して最適なチャンクをピックアップ
+        3. ピックアップしたチャンクを返す
         """
         start_time = time.time()
-        # 1. 主語抽出
+
+        # 1. 固有名詞(本題)を抽出
         subject = self.extract_subject(query)
 
-        # 主語がなければ空のコンテキスト返す
+        # もし見つからなければ空コンテキスト返す
         if not subject:
             end_time = time.time()
             processing_time = end_time - start_time
             task_id = self.database.get_task_id(task_name)
+
             result_entry = {
                 'qa_id': qa_id,
                 'task_name': task_name,
@@ -122,13 +136,14 @@ class SubjectSearchModel(BaseRAGModel):
                 'cosine_similarity_4': 0.0,
                 'cosine_similarity_5': 0.0,
                 'processing_time': processing_time,
-                'model': c.SUBJECT_SEARCH,
+                'model': c.TOPIC_WORD_SEARCH,
                 'input_token_count': self.subject_extraction_input_tokens,
                 'output_token_count': self.subject_extraction_output_tokens,
                 'subject': subject,
                 'created_at': self.database.get_current_timestamp()
             }
             self.database.insert_rag_result(result_entry)
+
             return {
                 'get_context_1': '',
                 'get_context_2': '',
@@ -138,9 +153,9 @@ class SubjectSearchModel(BaseRAGModel):
                 'get_talk_nums': ''
             }
 
-        # 2. 会話履歴取得
+        # 2. 会話履歴を取得
         conversations = self.database.get_conversations_with_task_name(task_name)
-        # conversationsは [{task_id, word_info_id, talk_num, user, assistant, ...}, ...]
+        # conversations -> [{task_id, word_info_id, talk_num, user, assistant, ...}, ...]
 
         # (task_id, word_info_id) ごとにグループ化
         grouped_conversations = {}
@@ -150,29 +165,31 @@ class SubjectSearchModel(BaseRAGModel):
                 grouped_conversations[t_id] = []
             grouped_conversations[t_id].append(convo)
 
-        # 3. subject含む発話を起点に5件のチャンクを作る
+        # subjectを含む発話を起点に最大5件のチャンクを作る
         chunks = []
         for key, convos in grouped_conversations.items():
-            # talk_numでソート
             convos_sorted = sorted(convos, key=lambda x: int(x['talk_num']))
 
             for i, line in enumerate(convos_sorted):
                 text_line = f"User: {line['user']}\nAssistant: {line['assistant']}"
+                # subject を含むかどうか
                 if subject in line['user'] or subject in line['assistant']:
-                    # i番目から最大5行とる
                     chunk_lines = convos_sorted[i:i+5]
                     if len(chunk_lines) > 0:
                         talk_nums_list = [ch['talk_num'] for ch in chunk_lines]
-                        # テキストコンテキスト(ユーザ+アシスタント)も返却用にまとめる
-                        chunk_texts = [f"User: {ch['user']}\nAssistant: {ch['assistant']}" for ch in chunk_lines]
+                        chunk_texts = [
+                            f"User: {ch['user']}\nAssistant: {ch['assistant']}"
+                            for ch in chunk_lines
+                        ]
                         chunk_full_text = "\n".join(chunk_texts)
                         chunks.append((talk_nums_list, chunk_full_text))
 
+        # 該当チャンクがなければ空を返す
         if not chunks:
-            # 該当会話なし
             end_time = time.time()
             processing_time = end_time - start_time
             task_id = self.database.get_task_id(task_name)
+
             result_entry = {
                 'qa_id': qa_id,
                 'task_name': task_name,
@@ -188,15 +205,16 @@ class SubjectSearchModel(BaseRAGModel):
                 'cosine_similarity_4': 0.0,
                 'cosine_similarity_5': 0.0,
                 'processing_time': processing_time,
-                'model': c.SUBJECT_SEARCH,
+                'model': c.TOPIC_WORD_SEARCH,
                 'input_token_count': self.subject_extraction_input_tokens,
                 'output_token_count': self.subject_extraction_output_tokens,
                 'subject': subject,
                 'created_at': self.database.get_current_timestamp()
             }
             self.database.insert_rag_result(result_entry)
+
             return {
-                'get_context_1': f"抽出した主語: {subject}\n(該当会話なし)",
+                'get_context_1': f"抽出した固有名詞: {subject}\n(該当会話なし)",
                 'get_context_2': '',
                 'get_context_3': '',
                 'get_context_4': '',
@@ -204,17 +222,14 @@ class SubjectSearchModel(BaseRAGModel):
                 'get_talk_nums': ''
             }
 
-        # 4. クエリベクトルを取得
+        # 3. Embedding でさらに最適チャンクを選ぶ
         query_vector = self.vector_db.compute_query_embedding(query)
 
-        # タスク全体の talk_num -> vector のマッピングを作成
-        # fetch_vectors_and_contents で全ての会話ベクトルを取得
-        vectors, contents, vector_ids, talk_nums = self.vector_db.fetch_vectors_and_contents(task_name)
-
-        # talk_numは文字列、vector_idsはint、順番が対応しているので talk_num -> vector, talk_num -> content を作成
+        # タスク全体の talk_num -> vector / content マッピング取得
+        vectors, contents, vector_ids, all_talk_nums = self.vector_db.fetch_vectors_and_contents(task_name)
         talk_num_to_vector = {}
         talk_num_to_content = {}
-        for i, tn in enumerate(talk_nums):
+        for i, tn in enumerate(all_talk_nums):
             talk_num_to_vector[tn] = vectors[i]
             talk_num_to_content[tn] = contents[i]
 
@@ -222,20 +237,15 @@ class SubjectSearchModel(BaseRAGModel):
         best_chunk_text = None
         best_talk_nums = []
 
-        # 5. 各チャンクについて、5つの talk_num のベクトルを平均する
         for talk_nums_list, chunk_full_text in chunks:
             chunk_vectors = []
             for tn in talk_nums_list:
                 if tn in talk_num_to_vector:
                     chunk_vectors.append(talk_num_to_vector[tn])
-            
             if not chunk_vectors:
                 continue
 
-            # 平均ベクトル計算
             chunk_vector = np.mean(chunk_vectors, axis=0).astype(np.float32)
-
-            # 6. 類似度計算
             similarity = self.vector_db.cosine_similarity(query_vector, chunk_vector)
             if similarity > best_similarity:
                 best_similarity = similarity
@@ -245,20 +255,16 @@ class SubjectSearchModel(BaseRAGModel):
         end_time = time.time()
         processing_time = end_time - start_time
 
-        # best_talk_numsに対応するcontentを取得
+        # best_talk_nums に対応する content を最大5件取得
         selected_contents = [talk_num_to_content.get(tn, '') for tn in best_talk_nums]
-
-        # 足りない場合は空文字で埋める（最大5件）
         while len(selected_contents) < 5:
             selected_contents.append('')
-        # 修正箇所ここまで
         get_talk_nums = ','.join(str(num) for num in best_talk_nums)
 
-        # RAG結果の保存
+        # DB保存
         task_id = self.database.get_task_id(task_name)
-        # best_talk_numsには最大5件のtalk_numが入る
-        # 不足分は空で埋める
         tnums = best_talk_nums + ['']*(5 - len(best_talk_nums))
+
         result_entry = {
             'qa_id': qa_id,
             'task_name': task_name,
@@ -268,14 +274,13 @@ class SubjectSearchModel(BaseRAGModel):
             'talk_num_3': tnums[2],
             'talk_num_4': tnums[3],
             'talk_num_5': tnums[4],
-            # 今回はbest chunkのみなので cosine_similarity_1 にbestを、他は0.0
             'cosine_similarity_1': best_similarity,
             'cosine_similarity_2': 0.0,
             'cosine_similarity_3': 0.0,
             'cosine_similarity_4': 0.0,
             'cosine_similarity_5': 0.0,
             'processing_time': processing_time,
-            'model': c.SUBJECT_SEARCH,
+            'model': c.TOPIC_WORD_SEARCH,
             'input_token_count': self.subject_extraction_input_tokens,
             'output_token_count': self.subject_extraction_output_tokens,
             'subject': subject,

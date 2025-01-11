@@ -46,123 +46,175 @@ class Analysis:
             print(f"Error fetching task names: {e}")
             return []
         
-            
+        
     def get_cross_tab_data(self, selected_tasks):
+        """
+        クロス集計を取得し、DataFrame 形式で返す。
+        この中で rag_results から processing_time も取得して、平均処理時間を算出するようにする。
+        """
         try:
             placeholders = ','.join(['?'] * len(selected_tasks))
 
-            # Fetch evaluated_answers data
+            # 1) evaluated_answers
             select_ea_sql = f'''
             SELECT
                 ea.model,
                 ea.qa_id,
-                ea.talk_nums
+                ea.talk_nums,
+                ea.task_name
             FROM evaluated_answers ea
             WHERE ea.task_name IN ({placeholders})
             '''
             self.db.cursor.execute(select_ea_sql, selected_tasks)
             ea_rows = self.db.cursor.fetchall()
-
             if not ea_rows:
                 print("No data fetched for evaluated_answers.")
                 return pd.DataFrame()
 
-            # Convert evaluated_answers to DataFrame
-            evaluated_answers = pd.DataFrame(ea_rows, columns=['model', 'qa_id', 'talk_nums'])
+            evaluated_answers = pd.DataFrame(ea_rows, columns=['model', 'qa_id', 'talk_nums', 'task_name'])
 
-            # Fetch rag_results data
+            # 2) rag_results
             select_rr_sql = f'''
             SELECT
+                rr.rag_id,
                 rr.model,
                 rr.qa_id,
                 rr.talk_num_1,
                 rr.talk_num_2,
                 rr.talk_num_3,
                 rr.talk_num_4,
-                rr.talk_num_5
+                rr.talk_num_5,
+                rr.processing_time,  -- ★ processing_time を取得
+                rr.task_name
             FROM rag_results rr
             WHERE rr.task_name IN ({placeholders})
             '''
             self.db.cursor.execute(select_rr_sql, selected_tasks)
             rr_rows = self.db.cursor.fetchall()
-
             if not rr_rows:
                 print("No data fetched for rag_results.")
                 return pd.DataFrame()
 
-            # Convert rag_results to DataFrame
             rag_results = pd.DataFrame(rr_rows, columns=[
-                'model', 'qa_id', 'talk_num_1', 'talk_num_2', 'talk_num_3', 'talk_num_4', 'talk_num_5'
+                'rag_id', 'model', 'qa_id',
+                'talk_num_1', 'talk_num_2', 'talk_num_3', 'talk_num_4', 'talk_num_5',
+                'processing_time',
+                'task_name'
             ])
 
-            # Call calculate_errors_simple
+            # 3) エラー計算 + 平均処理時間
             result_df = self.calculate_errors(evaluated_answers, rag_results)
-
             return result_df
 
         except Exception as e:
             print(f"Error fetching cross tab data: {e}")
             return pd.DataFrame()
-
+        
 
     def calculate_errors(self, evaluated_answers, rag_results):
+        """
+        各 (model, qa_id) ごとに talk_nums が一致しない場合をエラーとみなし、
+        さらに rag_results の processing_time の平均を算出して出力する。
+        """
         try:
-            # モデル名のリストを取得
             models = set(evaluated_answers['model']).union(set(rag_results['model']))
+            results_rows = []
 
-            # 結果を格納するリストを初期化
-            results = []
+            # rag_results から (model, qa_id) 単位の情報をまとめる
+            rag_dict = {}
+            for _, rr_row in rag_results.iterrows():
+                model = rr_row['model']
+                qa_id = rr_row['qa_id']
+                dict_key = (model, qa_id)
 
-            for model in models:
-                # 特定のモデルのデータをフィルタリング
-                eval_answers_model = evaluated_answers[evaluated_answers['model'] == model]
-                rag_results_model = rag_results[rag_results['model'] == model]
+                if dict_key not in rag_dict:
+                    rag_dict[dict_key] = {
+                        'rag_id': rr_row['rag_id'],
+                        'talk_nums': [],
+                        'task_name': rr_row['task_name'],
+                        'processing_times': []
+                    }
 
-                # evaluated_answers を辞書に変換: {qa_id: talk_num}
-                eval_dict = {
-                    row['qa_id']: str(row['talk_nums']).strip()
-                    for _, row in eval_answers_model.iterrows()
-                }
+                # 5つの talk_num
+                tlist = [
+                    str(rr_row['talk_num_1']).strip(),
+                    str(rr_row['talk_num_2']).strip(),
+                    str(rr_row['talk_num_3']).strip(),
+                    str(rr_row['talk_num_4']).strip(),
+                    str(rr_row['talk_num_5']).strip()
+                ]
+                tlist = [x for x in tlist if x and x != 'None']
+                rag_dict[dict_key]['talk_nums'].extend(tlist)
 
-                # rag_results を辞書に変換: {qa_id: [talk_num_1, ..., talk_num_5]}
-                rag_dict = {}
-                for _, row in rag_results_model.iterrows():
-                    qa_id = row['qa_id']
-                    rag_talk_nums = [
-                        str(row['talk_num_1']).strip(),
-                        str(row['talk_num_2']).strip(),
-                        str(row['talk_num_3']).strip(),
-                        str(row['talk_num_4']).strip(),
-                        str(row['talk_num_5']).strip()
-                    ]
-                    # None や空文字列を除外
-                    rag_talk_nums = [t for t in rag_talk_nums if t and t != 'None']
-                    rag_dict[qa_id] = rag_talk_nums
+                # processing_time
+                pt = rr_row.get('processing_time', 0.0) or 0.0
+                rag_dict[dict_key]['processing_times'].append(pt)
 
-                # エラーの追跡
-                errors = []
-                total_count = len(eval_dict)
-                for qa_id, talk_num in eval_dict.items():
-                    rag_talk_nums = rag_dict.get(qa_id, [])
-                    if talk_num not in rag_talk_nums:
-                        errors.append(qa_id)
+            # evaluated_answers を走査してエラー判定
+            for _, ea_row in evaluated_answers.iterrows():
+                model_val = ea_row['model']
+                qa_id_val = ea_row['qa_id']
+                task_name = ea_row['task_name']
+                ea_talk   = str(ea_row['talk_nums']).strip()
 
-                # 結果の計算
-                error_count = len(errors)
-                error_rate = error_count / total_count if total_count > 0 else 0
+                dict_key = (model_val, qa_id_val)
+                if dict_key not in rag_dict:
+                    # RAG結果がない → エラー
+                    error_count = 1
+                    rag_id_str = "N/A"
+                    proc_times = []
+                else:
+                    info = rag_dict[dict_key]
+                    rag_talks = info['talk_nums']
+                    proc_times = info['processing_times']
 
-                # 結果をリストに追加
-                results.append({
-                    'モデル名': model,
-                    'エラー箇所': ','.join(map(str, errors)),
-                    'エラー合計数': error_count,
-                    '合計数': total_count,
-                    'エラー率': error_rate
+                    if ea_talk not in rag_talks:
+                        error_count = 1
+                        rag_id_str = str(info['rag_id'])
+                    else:
+                        error_count = 0
+                        rag_id_str = ""
+
+                # 平均処理時間を計算
+                if proc_times:
+                    avg_time = sum(proc_times) / len(proc_times)
+                else:
+                    avg_time = 0.0
+
+                results_rows.append({
+                    'タスク名': task_name,
+                    'モデル名': model_val,
+                    'qa_id': qa_id_val,
+                    'エラー箇所(rag_id)': rag_id_str,
+                    'エラー数': error_count,
+                    '平均処理時間': avg_time
                 })
 
-            # 結果のデータフレームを作成
-            result_df = pd.DataFrame(results)
-            return result_df
+            # 個票レベルを df 化
+            df = pd.DataFrame(results_rows)
+            if df.empty:
+                return df
+
+            # 最終的に (タスク名, モデル名) ごとに集計
+            agg_df = (
+                df.groupby(['タスク名', 'モデル名'], as_index=False)
+                .agg({
+                    'qa_id': 'count',           # → 合計数
+                    'エラー数': 'sum',          # → エラー合計数
+                    'エラー箇所(rag_id)': lambda x: ','.join([str(v) for v in x if v]),
+                    '平均処理時間': 'mean'      # → 平均処理時間の平均
+                })
+            )
+
+            agg_df.rename(columns={
+                'qa_id': '合計数',
+                'エラー数': 'エラー合計数',
+                'エラー箇所(rag_id)': 'エラー箇所(rag_id)',
+                '平均処理時間': '処理時間(平均)'
+            }, inplace=True)
+
+            agg_df['エラー率'] = agg_df['エラー合計数'] / agg_df['合計数']
+            return agg_df
 
         except Exception as e:
             print(f"Error in calculate_errors: {e}")
@@ -350,7 +402,6 @@ class Analysis:
     def perform_svd_analysis(self, selected_tasks):
         try:
             placeholders = ','.join(['?'] * len(selected_tasks))
-            print("a", flush=True)
 
             # evaluated_answers テーブルからデータを取得
             select_sql = f'''
@@ -364,7 +415,6 @@ class Analysis:
             if not rows:
                 print("選択されたタスクに対応するデータが見つかりませんでした。")
                 return []
-            print("b", flush=True)
 
             svd_results = []
 
@@ -400,7 +450,6 @@ class Analysis:
                 # SVDの実行
                 svd = TruncatedSVD(n_components=2)
                 svd_result = svd.fit_transform(X)
-                print("c", flush=True)
 
 
                 # プロット用のデータを準備
@@ -413,7 +462,6 @@ class Analysis:
                         'Label': labels[i]
                     }
                     coordinates.append(coord)
-                print("d", flush=True)
 
                 svd_results.append({
                     'qa_id': qa_id,
@@ -422,7 +470,6 @@ class Analysis:
                     'model_answer': model_answer,
                     'coordinates': coordinates
                 })
-                print("e", flush=True)
 
             return svd_results
 
@@ -447,6 +494,102 @@ class Analysis:
             return np.zeros((1536,), dtype='float32')  # モデルの次元数に合わせてゼロベクトルを返す
 
 
+
+
+    def get_evaluation_results(self, task_name: str):
+        """
+        evaluated_answers と rag_results を LEFT JOIN し、
+        - rag_results の rag_id も取得
+        - get_talk_nums (カンマ区切り) に基づき、get_context_1..5 を生成
+        """
+        try:
+            sql = """
+            SELECT
+                ea.qa_id,
+                ea.task_name,
+                ea.model,
+                ea.question,
+                ea.expected_answer,
+                ea.gpt_response,
+                ea.talk_nums,
+                ea.get_talk_nums,
+
+                gqa.word_info_id,
+                wi.word,
+
+                rr.processing_time AS rag_processing_time,
+                rr.rag_id
+
+            FROM evaluated_answers ea
+            LEFT JOIN generated_qas gqa
+                ON ea.qa_id = gqa.qa_id
+            LEFT JOIN words_info wi
+                ON gqa.word_info_id = wi.word_info_id
+            LEFT JOIN rag_results rr
+                ON ea.qa_id = rr.qa_id
+                AND ea.task_id = rr.task_id
+                AND ea.model = rr.model
+
+            WHERE ea.task_name = ?
+            ORDER BY ea.qa_id ASC
+            """
+            self.db.cursor.execute(sql, (task_name,))
+            rows = self.db.cursor.fetchall()
+            if not rows:
+                return []
+
+            col_names = [desc[0] for desc in self.db.cursor.description]
+            results = []
+
+            for row in rows:
+                row_dict = dict(zip(col_names, row))
+
+                # カンマ区切りを分割して talk_num のリスト化
+                talk_num_str = row_dict.get("get_talk_nums", "")
+                if talk_num_str:
+                    talk_num_list = [x.strip() for x in talk_num_str.split(',') if x.strip()]
+                else:
+                    talk_num_list = []
+
+                # 最大5件まで get_context_1..5 を埋め込む
+                for i in range(5):
+                    ctx_key = f"get_context_{i+1}"
+                    if i < len(talk_num_list):
+                        t_num = talk_num_list[i]
+
+                        # conversationsテーブルを参照して発話を取得
+                        context_lines = []
+                        conv_sql = """
+                        SELECT c.user, c.assistant
+                        FROM conversations c
+                        INNER JOIN tasks t ON c.task_id = t.task_id
+                        WHERE t.task_name = ?
+                        AND c.talk_num = ?
+                        ORDER BY c.created_at ASC
+                        """
+                        self.db.cursor.execute(conv_sql, (task_name, t_num))
+                        convo_rows = self.db.cursor.fetchall()
+
+                        for (u, a) in convo_rows:
+                            context_lines.append(f"User: {u}\nAssistant: {a}")
+
+                        if context_lines:
+                            merged_context = "\n\n".join(context_lines)
+                        else:
+                            merged_context = "(該当会話なし)"
+
+                        row_dict[ctx_key] = merged_context
+                    else:
+                        # 5件に満たない場合は空文字
+                        row_dict[ctx_key] = ""
+
+                results.append(row_dict)
+
+            return results
+
+        except Exception as e:
+            print(f"Error in get_evaluation_results: {e}")
+            return []
 
 
     def close(self):

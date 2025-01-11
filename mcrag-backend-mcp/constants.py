@@ -14,3 +14,5 @@ MAX_TOKENS = 2000
 VECTOR_SEARCH = "ベクトル検索"
 HYBRID_SEARCH = "ハイブリッド検索"
 SUBJECT_SEARCH = "主語検索"
+TOPIC_WORD_SEARCH = "トピックワード検索"
+BM25_SEARCH = "BM25検索"

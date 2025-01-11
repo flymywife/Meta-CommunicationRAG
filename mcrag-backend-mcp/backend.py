@@ -225,7 +225,6 @@ async def get_cross_tab_data(request: Request):
             raise HTTPException(status_code=400, detail="No task names specified.")
 
         analysis = Analysis(api_key=api_key)
-        print(f"ttttttttt:{task_names}", flush=True)
         cross_tab_data = analysis.get_cross_tab_data(task_names)
         analysis.close()
 
@@ -295,12 +294,33 @@ async def perform_svd_analysis(request: Request):
         raise HTTPException(status_code=500, detail=f"SVD分析中にエラーが発生しました: {e}")
     
 
+@app.post("/get_evaluation_results")
+async def get_evaluation_results(request: Request):
+    try:
+        data = await request.json()
+        task_name = data.get("task_name", "")
+        api_key = data.get("api_key", "")
+
+        if not task_name:
+            raise HTTPException(status_code=400, detail="タスク名が指定されていません。")
+
+        analysis = Analysis(api_key=api_key)  # api_keyは不要なら固定文字列でもOK
+        results = analysis.get_evaluation_results(task_name)
+        analysis.close()
+
+        return JSONResponse(content={"data": results}, status_code=200)
+    except Exception as e:
+        logging.error(f"Error in /get_evaluation_results: {str(e)}")
+        return JSONResponse(content={"detail": str(e)}, status_code=500)
+
+    
+
 if __name__ == "__main__":
     uvicorn.run(
         "backend:app",              # "app.py"ファイル内の "app" インスタンスを指定
         host="0.0.0.0",         # ホスト指定 (必要に応じて変更)
         port=8000,              # ポート指定 (必要に応じて変更)
-        timeout_keep_alive=99999,  # Keep-Alive接続のタイムアウトを30秒に延長
+        timeout_keep_alive=99999,  # Keep-Alive接続のタイムアウト
         # 他にも必要なパラメータがあればここで指定可能
         workers=1
     )

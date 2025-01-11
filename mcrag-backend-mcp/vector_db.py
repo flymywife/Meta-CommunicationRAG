@@ -141,7 +141,7 @@ class VectorDatabase:
             for convo in sorted_convos:
                 user = convo['user']
                 assistant = convo['assistant']
-                content_parts.append(f"User: {user}\nAssistant: {assistant}")
+                content_parts.append(f"{user}\n{assistant}")
 
             content = "\n".join(content_parts)
 
@@ -242,6 +242,43 @@ class VectorDatabase:
             talk_nums.append(talk_num)
 
         return np.array(vectors), contents, vector_ids, talk_nums
+    
+
+    def fetch_vectors_and_pca_vectors(self, task_name: str) -> Tuple[np.ndarray, List[str], List[int], List[str], List[np.ndarray]]:
+        """
+        特定のタスクに対応するベクトルとコンテンツ、pca_vectorをデータベースから取得します。
+        """
+        select_sql = '''
+        SELECT v.vector_id, v.content, v.vector, v.pca_vector, v.task_id, v.word_info_id, v.talk_num
+        FROM vector_table v
+        INNER JOIN conversations c ON v.task_id = c.task_id AND v.word_info_id = c.word_info_id AND v.talk_num = c.talk_num
+        INNER JOIN tasks t ON c.task_id = t.task_id
+        WHERE t.task_name = ?
+        '''
+        self.cursor.execute(select_sql, (task_name,))
+        rows = self.cursor.fetchall()
+        if not rows:
+            raise ValueError(f"タスク名 '{task_name}' に対応するベクトルが存在しません。")
+
+        vectors = []
+        contents = []
+        vector_ids = []
+        talk_nums = []
+        pca_vectors = []
+        for row in rows:
+            vector_id, content, vector_blob, pca_vector_blob, task_id, word_info_id, talk_num = row
+            vector = np.frombuffer(vector_blob, dtype=np.float32)
+            vectors.append(vector)
+            contents.append(content)
+            vector_ids.append(vector_id)
+            talk_nums.append(talk_num)
+            if pca_vector_blob:
+                pca_vector = np.frombuffer(pca_vector_blob, dtype=np.float64)
+            else:
+                pca_vector = None
+            pca_vectors.append(pca_vector)
+
+        return np.array(vectors), contents, vector_ids, talk_nums, pca_vectors
 
     def retrieve_similar_vectors(self, query_vector: np.ndarray, top_k: int = 5) -> List[Tuple[int, float]]:
         """

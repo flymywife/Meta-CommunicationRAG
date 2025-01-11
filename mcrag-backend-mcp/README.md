@@ -5,10 +5,11 @@ Meta-Communication Retrieval-Augmented Generation(MCRAG)
 
 pip install -r requirements.txt
 
-uvicorn backend:app --reload
-
+python backend.py
 
 
 conda create --name mcrag-backend python=3.10
 conda activate mcrag-backend
+
+
 
