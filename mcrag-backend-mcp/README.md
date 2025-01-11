@@ -13,3 +13,6 @@ conda activate mcrag-backend
 
 
 
+最終提出時点のデータ（大きすぎるためドライブ移行）
+https://drive.google.com/file/d/1XVL5E2lB_qdmgHbTGcDnobVzVCQopA84/view?usp=sharing
+zipを解凍して、conversation_data.db
